@@ -16,8 +16,8 @@ class AppConfig {
   /// device use your machine's LAN IP.
   static const String apiBaseUrl = String.fromEnvironment(
     'RT_API_BASE_URL',
-    // defaultValue: 'http://localhost:4000',
-    defaultValue: 'https://microlab.neuralarc.com',
+    defaultValue: 'http://localhost:4000',
+    // defaultValue: 'https://microlab.neuralarc.com',
   );
 
   static const String socketUrl = String.fromEnvironment(

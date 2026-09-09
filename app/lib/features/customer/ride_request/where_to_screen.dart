@@ -76,8 +76,18 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
     }
   }
 
+  bool get _placesReady =>
+      _pickup != null &&
+      _drop != null &&
+      MapView.isRealLatLng(_pickup!.lat, _pickup!.lng) &&
+      MapView.isRealLatLng(_drop!.lat, _drop!.lng);
+
   Future<void> _loadFares() async {
     if (_pickup == null || _drop == null) return;
+    if (!_placesReady) {
+      showError(context, 'Pick a valid pickup and destination from search first.');
+      return;
+    }
     setState(() => _busy = true);
     final res = await ref.read(rideRepoProvider).estimate(pickup: _pickup!, drop: _drop!);
     if (!mounted) return;
@@ -108,6 +118,10 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
 
   Future<void> _confirm() async {
     if (_pickup == null || _drop == null || _selected == null) return;
+    if (!_placesReady) {
+      showError(context, 'Pick a valid pickup and destination from search first.');
+      return;
+    }
     setState(() => _busy = true);
     final res = await ref.read(rideRepoProvider).create(
           pickup: _pickup!,
@@ -182,7 +196,7 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
         const SizedBox(height: 24),
         PrimaryButton(
           label: 'See fares',
-          onPressed: (_pickup != null && _drop != null) ? _loadFares : null,
+          onPressed: _placesReady ? _loadFares : null,
         ),
       ],
     );
@@ -192,7 +206,7 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
     final est = _estimate!;
     return Column(
       children: [
-        if (_pickup != null && _drop != null)
+        if (_placesReady)
           RoutePreviewMap(
             pickup: _pickup!,
             drop: _drop!,
@@ -283,7 +297,7 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        if (_pickup != null && _drop != null) ...[
+        if (_placesReady) ...[
           ClipRRect(
             borderRadius: BorderRadius.circular(14),
             child: RoutePreviewMap(
@@ -541,13 +555,22 @@ class _RoutePreviewMapState extends State<RoutePreviewMap> {
 
   LatLng get _p => LatLng(widget.pickup.lat, widget.pickup.lng);
   LatLng get _d => LatLng(widget.drop.lat, widget.drop.lng);
+  bool get _pOk => MapView.isRealLatLng(widget.pickup.lat, widget.pickup.lng);
+  bool get _dOk => MapView.isRealLatLng(widget.drop.lat, widget.drop.lng);
 
   void _fit() {
-    final pts = <LatLng>[_p, _d];
-    if (widget.polyline != null && widget.polyline!.isNotEmpty) {
-      pts.addAll(MapView.decodePolyline(widget.polyline!));
+    final pts = <LatLng>[
+      if (_pOk) _p,
+      if (_dOk) _d,
+    ];
+    final poly = widget.polyline;
+    if (poly != null && poly.isNotEmpty) {
+      pts.addAll(MapView.decodePolyline(poly).where(
+          (q) => MapView.isRealLatLng(q.latitude, q.longitude)));
     }
-    _mapKey.currentState?.fitTo(pts, padding: 48);
+    final map = _mapKey.currentState;
+    if (map == null || pts.isEmpty) return;
+    pts.length == 1 ? map.moveTo(pts.first, zoom: 15) : map.fitTo(pts, padding: 44);
   }
 
   @override
@@ -567,20 +590,22 @@ class _RoutePreviewMapState extends State<RoutePreviewMap> {
       height: widget.height,
       child: MapView(
         key: _mapKey,
-        initial: _p,
+        initial: _pOk ? _p : (_dOk ? _d : const LatLng(20.5937, 78.9629)),
         markers: {
-          Marker(
-            markerId: const MarkerId('pickup'),
-            position: _p,
-            icon: mk.pickup,
-            anchor: const Offset(0.5, 1),
-          ),
-          Marker(
-            markerId: const MarkerId('drop'),
-            position: _d,
-            icon: mk.drop,
-            anchor: const Offset(0.5, 1),
-          ),
+          if (_pOk)
+            Marker(
+              markerId: const MarkerId('pickup'),
+              position: _p,
+              icon: mk.pickup,
+              anchor: const Offset(0.5, 1),
+            ),
+          if (_dOk)
+            Marker(
+              markerId: const MarkerId('drop'),
+              position: _d,
+              icon: mk.drop,
+              anchor: const Offset(0.5, 1),
+            ),
         },
         polylines: {
           if (widget.polyline != null && widget.polyline!.isNotEmpty)
@@ -598,6 +623,28 @@ class _RoutePreviewMapState extends State<RoutePreviewMap> {
   }
 }
 
+class _SearchHint extends StatelessWidget {
+  const _SearchHint({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 44, color: AppColors.inkSoft),
+              const SizedBox(height: 12),
+              Text(text,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AppColors.inkSoft)),
+            ],
+          ),
+        ),
+      );
+}
+
 /// Autocomplete search sheet backed by the server-proxied Places API.
 class _PlaceSearchSheet extends ConsumerStatefulWidget {
   const _PlaceSearchSheet({required this.title, this.origin});
@@ -613,6 +660,7 @@ class _PlaceSearchSheetState extends ConsumerState<_PlaceSearchSheet> {
   final _debouncer = Debouncer();
   List<PlacePrediction> _results = [];
   bool _loading = false;
+  bool _serviceDown = false;
 
   @override
   void dispose() {
@@ -634,25 +682,39 @@ class _PlaceSearchSheetState extends ConsumerState<_PlaceSearchSheet> {
             lng: widget.origin?.lng,
           );
       if (!mounted) return;
+      final all = res.valueOrNull ?? const <PlacePrediction>[];
+      // Only predictions we can actually resolve to coordinates are useful —
+      // ones without a placeId (e.g. when the server has no maps key) would
+      // otherwise be picked and collapse to (0, 0).
+      final usable =
+          all.where((p) => (p.placeId ?? '').isNotEmpty).toList();
       setState(() {
         _loading = false;
-        _results = res.valueOrNull ?? [];
+        _results = usable;
+        _serviceDown = all.isNotEmpty && usable.isEmpty;
       });
     });
   }
 
   Future<void> _choose(PlacePrediction p) async {
-    if (p.placeId == null) {
-      Navigator.pop(context, LatLngPoint(lat: 0, lng: 0, addr: p.description));
+    final id = p.placeId;
+    if (id == null || id.isEmpty) {
+      showError(context, 'Place search is unavailable right now. Try again shortly.');
       return;
     }
-    final res = await ref.read(miscRepoProvider).placeDetails(p.placeId!);
+    final res = await ref.read(miscRepoProvider).placeDetails(id);
     if (!mounted) return;
     res.when(
-      ok: (loc) => Navigator.pop(
-        context,
-        LatLngPoint(lat: loc.lat, lng: loc.lng, addr: loc.addr ?? p.description),
-      ),
+      ok: (loc) {
+        if (!MapView.isRealLatLng(loc.lat, loc.lng)) {
+          showError(context, "Couldn't locate that place. Pick another result.");
+          return;
+        }
+        Navigator.pop(
+          context,
+          LatLngPoint(lat: loc.lat, lng: loc.lng, addr: loc.addr ?? p.description),
+        );
+      },
       err: (e) => showError(context, e.message),
     );
   }
@@ -682,20 +744,28 @@ class _PlaceSearchSheetState extends ConsumerState<_PlaceSearchSheet> {
             ),
             if (_loading) const LinearProgressIndicator(minHeight: 2),
             Expanded(
-              child: ListView.separated(
-                controller: controller,
-                itemCount: _results.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, i) {
-                  final p = _results[i];
-                  return ListTile(
-                    leading: const Icon(Icons.location_on_outlined),
-                    title: Text(p.mainText ?? p.description),
-                    subtitle: p.secondaryText != null ? Text(p.secondaryText!) : null,
-                    onTap: () => _choose(p),
-                  );
-                },
-              ),
+              child: _serviceDown
+                  ? const _SearchHint(
+                      icon: Icons.cloud_off_rounded,
+                      text: 'Place search is unavailable right now.\n'
+                          'Check your connection and try again.',
+                    )
+                  : ListView.separated(
+                      controller: controller,
+                      itemCount: _results.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (_, i) {
+                        final p = _results[i];
+                        return ListTile(
+                          leading: const Icon(Icons.location_on_outlined),
+                          title: Text(p.mainText ?? p.description),
+                          subtitle: p.secondaryText != null
+                              ? Text(p.secondaryText!)
+                              : null,
+                          onTap: () => _choose(p),
+                        );
+                      },
+                    ),
             ),
           ],
         ),
