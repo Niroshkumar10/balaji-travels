@@ -14,6 +14,7 @@ class MapView extends StatefulWidget {
     this.polylines = const {},
     this.onMapCreated,
     this.onCameraMove,
+    this.onCameraMoveStarted,
     this.onTap,
     this.myLocationEnabled = false,
     this.padding = const EdgeInsets.all(0),
@@ -24,6 +25,7 @@ class MapView extends StatefulWidget {
   final Set<Polyline> polylines;
   final void Function(GoogleMapController)? onMapCreated;
   final void Function(CameraPosition)? onCameraMove;
+  final VoidCallback? onCameraMoveStarted;
   final void Function(LatLng)? onTap;
   final bool myLocationEnabled;
   final EdgeInsets padding;
@@ -68,16 +70,27 @@ class MapView extends StatefulWidget {
 
 class MapViewState extends State<MapView> {
   GoogleMapController? _controller;
+  GoogleMapController? get controller => _controller;
 
   Future<void> fitTo(Iterable<LatLng> pts, {double padding = 60}) async {
-    if (_controller == null || pts.length < 2) return;
+    final list = pts.toList();
+    if (_controller == null || list.isEmpty) return;
+    if (list.length == 1) {
+      await moveTo(list.first, zoom: 16);
+      return;
+    }
     await _controller!.animateCamera(
-      CameraUpdate.newLatLngBounds(MapView.boundsOf(pts), padding),
+      CameraUpdate.newLatLngBounds(MapView.boundsOf(list), padding),
     );
   }
 
   Future<void> moveTo(LatLng target, {double zoom = 15}) async {
     await _controller?.animateCamera(CameraUpdate.newLatLngZoom(target, zoom));
+  }
+
+  /// Pan to a point WITHOUT changing zoom (used to follow a moving driver).
+  Future<void> panTo(LatLng target) async {
+    await _controller?.animateCamera(CameraUpdate.newLatLng(target));
   }
 
   @override
@@ -90,12 +103,16 @@ class MapViewState extends State<MapView> {
       myLocationButtonEnabled: false,
       zoomControlsEnabled: false,
       compassEnabled: false,
+      mapToolbarEnabled: false,
+      buildingsEnabled: true,
+      trafficEnabled: false,
       padding: widget.padding,
       onMapCreated: (c) {
         _controller = c;
         widget.onMapCreated?.call(c);
       },
       onCameraMove: widget.onCameraMove,
+      onCameraMoveStarted: widget.onCameraMoveStarted,
       onTap: widget.onTap,
     );
   }

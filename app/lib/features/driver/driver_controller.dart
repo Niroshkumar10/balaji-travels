@@ -40,6 +40,8 @@ class DriverState {
     this.availability = 'offline',
     this.ride,
     this.offer,
+    this.customerLat,
+    this.customerLng,
     this.busy = false,
     this.error,
   });
@@ -48,16 +50,21 @@ class DriverState {
   final String availability;
   final Ride? ride;
   final PendingOffer? offer;
+  final double? customerLat;
+  final double? customerLng;
   final bool busy;
   final String? error;
 
   bool get onTrip => ride != null && ride!.status.isActive;
+  bool get hasCustomerLocation => customerLat != null && customerLng != null;
 
   DriverState copyWith({
     bool? online,
     String? availability,
     Ride? ride,
     Object? offer = _sentinel,
+    double? customerLat,
+    double? customerLng,
     bool? busy,
     Object? error = _sentinel,
   }) =>
@@ -66,6 +73,8 @@ class DriverState {
         availability: availability ?? this.availability,
         ride: ride ?? this.ride,
         offer: identical(offer, _sentinel) ? this.offer : offer as PendingOffer?,
+        customerLat: customerLat ?? this.customerLat,
+        customerLng: customerLng ?? this.customerLng,
         busy: busy ?? this.busy,
         error: identical(error, _sentinel) ? this.error : error as String?,
       );
@@ -147,6 +156,15 @@ class DriverController extends StateNotifier<DriverState> {
     _posSub = null;
     state = state.copyWith(online: false, availability: 'offline', busy: false);
     return null;
+  }
+
+  /// Make sure GPS is streaming while a trip is active even if the app was
+  /// cold-started onto an in-progress ride (i.e. [goOnline] wasn't called this
+  /// session). The customer's tracking map depends on these pings.
+  Future<void> _ensureTripLocationStream() async {
+    if (_posSub != null || !state.onTrip) return;
+    final perm = await _location.ensurePermission();
+    if (perm.granted) _startLocationStream();
   }
 
   void _startLocationStream() {
@@ -242,7 +260,10 @@ class DriverController extends StateNotifier<DriverState> {
           ride: ride,
           availability: ride != null && ride.status.isActive ? 'on_trip' : state.availability,
         );
-        if (ride != null) _socket.emitAck('ride:resync', {'rideId': ride.id});
+        if (ride != null) {
+          _socket.emitAck('ride:resync', {'rideId': ride.id});
+          _ensureTripLocationStream();
+        }
       },
       err: (_) {},
     );
@@ -295,6 +316,13 @@ class DriverController extends StateNotifier<DriverState> {
       case 'ride:offer_revoked':
         if (state.offer?.rideId == (d['rideId'] as num?)?.toInt()) {
           state = state.copyWith(offer: null);
+        }
+      case 'ride:customer_location':
+        if (_rideId != null && (d['rideId'] as num?)?.toInt() == _rideId) {
+          state = state.copyWith(
+            customerLat: (d['lat'] as num?)?.toDouble(),
+            customerLng: (d['lng'] as num?)?.toDouble(),
+          );
         }
       case 'ride:assigned':
       case 'ride:status':

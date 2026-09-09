@@ -214,12 +214,15 @@ class InfoRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(child: Text(label, style: t.bodyMedium?.copyWith(color: AppColors.inkSoft))),
+          Text(label, style: t.bodyMedium?.copyWith(color: AppColors.inkSoft)),
           const SizedBox(width: 12),
-          Text(
-            value,
-            style: (strong ? t.titleSmall : t.bodyMedium)?.copyWith(
-              fontWeight: strong ? FontWeight.w800 : FontWeight.w600,
+          Expanded(
+            child: Text(
+              value,
+              textAlign: TextAlign.end,
+              style: (strong ? t.titleSmall : t.bodyMedium)?.copyWith(
+                fontWeight: strong ? FontWeight.w800 : FontWeight.w600,
+              ),
             ),
           ),
         ],

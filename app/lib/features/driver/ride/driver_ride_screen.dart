@@ -10,6 +10,7 @@ import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/util/formatters.dart';
 import '../../../core/widgets/common_widgets.dart';
+import '../../../core/widgets/map_markers.dart';
 import '../../../core/widgets/map_view.dart';
 import '../../../core/widgets/otp_input.dart';
 import '../driver_controller.dart';
@@ -75,6 +76,10 @@ class _State extends ConsumerState<DriverRideScreen> {
     final target = toPickup
         ? LatLng(ride.pickupLat, ride.pickupLng)
         : LatLng(ride.dropLat, ride.dropLng);
+    final mk = MapMarkers.instance;
+    final customer = state.hasCustomerLocation
+        ? LatLng(state.customerLat!, state.customerLng!)
+        : null;
 
     return Scaffold(
       body: Stack(
@@ -85,20 +90,34 @@ class _State extends ConsumerState<DriverRideScreen> {
             myLocationEnabled: true,
             markers: {
               Marker(
-                markerId: MarkerId(toPickup ? 'pickup' : 'drop'),
-                position: target,
-                icon: BitmapDescriptor.defaultMarkerWithHue(
-                  toPickup ? BitmapDescriptor.hueGreen : BitmapDescriptor.hueRed,
-                ),
+                markerId: const MarkerId('pickup'),
+                position: LatLng(ride.pickupLat, ride.pickupLng),
+                icon: mk.pickup,
+                anchor: const Offset(0.5, 1),
               ),
+              Marker(
+                markerId: const MarkerId('drop'),
+                position: LatLng(ride.dropLat, ride.dropLng),
+                icon: mk.drop,
+                anchor: const Offset(0.5, 1),
+              ),
+              if (toPickup && customer != null)
+                Marker(
+                  markerId: const MarkerId('customer'),
+                  position: customer,
+                  icon: mk.me,
+                  anchor: const Offset(0.5, 0.5),
+                ),
             },
             polylines: {
-              if (ride.polyline != null && ride.polyline!.isNotEmpty && !toPickup)
+              if (ride.polyline != null && ride.polyline!.isNotEmpty)
                 Polyline(
                   polylineId: const PolylineId('route'),
                   points: MapView.decodePolyline(ride.polyline!),
-                  color: AppColors.brand,
+                  color: AppColors.mapRoute,
                   width: 5,
+                  startCap: Cap.roundCap,
+                  endCap: Cap.roundCap,
                 ),
             },
           ),
