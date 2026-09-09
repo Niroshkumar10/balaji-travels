@@ -56,4 +56,21 @@ class ProfileRepository {
     final res = await _api.post('/drivers/me/offline');
     return res.when<Result<void>>(ok: (_) => const Ok(null), err: (e) => Err(e));
   }
+
+  /// Keep-alive ping so dispatch keeps seeing the driver even when the socket
+  /// stream is quiet (parked / stationary). Fire-and-forget.
+  Future<Result<void>> heartbeat({
+    required double lat,
+    required double lng,
+    double? bearing,
+    double? speedKmph,
+  }) async {
+    final res = await _api.post('/drivers/me/heartbeat', body: {
+      'lat': lat,
+      'lng': lng,
+      if (bearing != null) 'bearing': bearing,
+      if (speedKmph != null) 'speedKmph': speedKmph,
+    });
+    return res.when<Result<void>>(ok: (_) => const Ok(null), err: (e) => Err(e));
+  }
 }

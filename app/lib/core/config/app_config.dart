@@ -16,13 +16,14 @@ class AppConfig {
   /// device use your machine's LAN IP.
   static const String apiBaseUrl = String.fromEnvironment(
     'RT_API_BASE_URL',
-    defaultValue: 'http://localhost:4000',
-    // defaultValue: 'https://microlab.neuralarc.com',
+    // defaultValue: 'http://localhost:4000',
+    defaultValue: 'https://microlab.neuralarc.com',
   );
 
   static const String socketUrl = String.fromEnvironment(
     'RT_SOCKET_URL',
-    defaultValue: 'http://localhost:4000',
+    // defaultValue: 'http://localhost:4000',
+    defaultValue: 'https://microlab.neuralarc.com',
   );
 
   /// Only needed if the app calls Google Places directly. The default path

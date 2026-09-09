@@ -107,8 +107,15 @@ class DriverController extends StateNotifier<DriverState> {
 
   late final StreamSubscription<SocketEvent> _sub;
   StreamSubscription<Position>? _posSub;
+  Timer? _heartbeatTimer;
+  Position? _lastPos;
 
   int? get _rideId => state.ride?.id;
+
+  /// How often to force a keep-alive ping regardless of movement. Must be well
+  /// under the server's DRIVER_LOCATION_STALE_SECONDS / offline-sweep window,
+  /// otherwise a parked driver silently drops out of dispatch.
+  static const _heartbeatEvery = Duration(seconds: 20);
 
   // ── presence ──────────────────────────────────────────────────────────────
   Future<String?> goOnline() async {
@@ -123,6 +130,7 @@ class DriverController extends StateNotifier<DriverState> {
       state = state.copyWith(busy: false);
       return 'Could not get your location';
     }
+    _lastPos = pos;
     final ack = await _socket.emitAck('driver:online', {
       'lat': pos.latitude,
       'lng': pos.longitude,
@@ -152,8 +160,7 @@ class DriverController extends StateNotifier<DriverState> {
         return err;
       }
     }
-    _posSub?.cancel();
-    _posSub = null;
+    _stopLocationStream();
     state = state.copyWith(online: false, availability: 'offline', busy: false);
     return null;
   }
@@ -170,18 +177,52 @@ class DriverController extends StateNotifier<DriverState> {
   void _startLocationStream() {
     _posSub?.cancel();
     _posSub = _location.stream(distanceFilterM: 12).listen((pos) {
-      final payload = {
-        'lat': pos.latitude,
-        'lng': pos.longitude,
-        'bearing': pos.heading,
-        'speedKmph': pos.speed * 3.6,
-      };
-      if (state.onTrip && _rideId != null) {
-        _socket.emit('driver:location', {...payload, 'rideId': _rideId});
-      } else {
-        _socket.emit('driver:heartbeat', payload);
-      }
+      _lastPos = pos;
+      _pingLocation(pos);
     });
+
+    // Movement-based pings stop the moment the driver stands still; this timer
+    // keeps the presence fresh so dispatch (and the offline sweep) keep them in.
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(_heartbeatEvery, (_) async {
+      if (!state.online && !state.onTrip) return;
+      final pos = await _location.current() ?? _lastPos;
+      if (pos == null) return;
+      _lastPos = pos;
+      _pingLocation(pos, restFallback: true);
+    });
+  }
+
+  void _pingLocation(Position pos, {bool restFallback = false}) {
+    final payload = {
+      'lat': pos.latitude,
+      'lng': pos.longitude,
+      'bearing': pos.heading,
+      'speedKmph': pos.speed * 3.6,
+    };
+    if (state.onTrip && _rideId != null) {
+      _socket.emit('driver:location', {...payload, 'rideId': _rideId});
+    } else {
+      _socket.emit('driver:heartbeat', payload);
+    }
+    // The socket emit is fire-and-forget and silently no-ops when disconnected;
+    // on the periodic tick also hit REST so a dropped socket never makes the
+    // driver invisible to dispatch.
+    if (restFallback) {
+      unawaited(_profiles.heartbeat(
+        lat: pos.latitude,
+        lng: pos.longitude,
+        bearing: pos.heading,
+        speedKmph: pos.speed * 3.6,
+      ));
+    }
+  }
+
+  void _stopLocationStream() {
+    _posSub?.cancel();
+    _posSub = null;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
   }
 
   // ── dispatch offers ──────────────────────────────────────────────────────
@@ -341,7 +382,7 @@ class DriverController extends StateNotifier<DriverState> {
   @override
   void dispose() {
     _sub.cancel();
-    _posSub?.cancel();
+    _stopLocationStream();
     super.dispose();
   }
 }

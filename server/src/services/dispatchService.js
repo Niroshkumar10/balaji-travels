@@ -60,7 +60,7 @@ async function buildQueue(ride, excludeIds = new Set()) {
     categories: [ride.vehicle_category],
     limit: MAX_DRIVERS * 2,
   });
-  return rows
+  const queue = rows
     .filter((r) => !excludeIds.has(r.driver_id))
     .slice(0, MAX_DRIVERS)
     .map((r) => ({
@@ -70,9 +70,46 @@ async function buildQueue(ride, excludeIds = new Set()) {
       lat: Number(r.lat),
       lng: Number(r.lng),
     }));
+  logger.info(
+    {
+      rideId: ride.id,
+      pickup: { lat: Number(ride.pickup_lat), lng: Number(ride.pickup_lng) },
+      radiusKm: RADIUS_KM,
+      category: ride.vehicle_category,
+      nearbyRows: rows.length,
+      queued: queue.length,
+      driverIds: queue.map((c) => c.driverId),
+    },
+    'dispatch.buildQueue',
+  );
+  return queue;
+}
+
+/** Run the staged diagnostic and log which filter eliminated every driver. */
+async function logWhyNoDrivers(ride) {
+  try {
+    const d = await driverLocationRepo.diagnose({
+      lat: Number(ride.pickup_lat),
+      lng: Number(ride.pickup_lng),
+      radiusKm: RADIUS_KM,
+      category: ride.vehicle_category,
+    });
+    logger.warn({ rideId: ride.id, diagnostic: d }, 'dispatch.no_candidates — see which count drops to 0');
+  } catch (err) {
+    logger.error({ rideId: ride.id, err: err.message }, 'dispatch.diagnose failed');
+  }
 }
 
 async function start(ride) {
+  logger.info(
+    {
+      rideId: ride.id,
+      pickup: { lat: Number(ride.pickup_lat), lng: Number(ride.pickup_lng) },
+      category: ride.vehicle_category,
+      radiusKm: RADIUS_KM,
+    },
+    'dispatch.start',
+  );
   // REQUESTED → SEARCHING_DRIVER
   const searching = await db.withTransaction((tx) =>
     rideRepo.transition({ rideId: ride.id, event: 'search', actorRole: 'system' }, tx),
@@ -83,6 +120,7 @@ async function start(ride) {
 
   const queue = await buildQueue(searching);
   if (queue.length === 0) {
+    await logWhyNoDrivers(searching);
     await noDrivers(ride.id);
     return;
   }
@@ -108,11 +146,12 @@ async function offerNext(rideId) {
   if (s.idx >= s.queue.length) {
     const fresh = await buildQueue(s.ride, new Set(s.queue.map((c) => c.driverId)));
     if (fresh.length === 0) {
+      await logWhyNoDrivers(s.ride);
       await noDrivers(rideId);
       return;
     }
     s.queue.push(...fresh);
-    logger.info({ rideId, added: fresh.length }, 'dispatch queue expanded');
+    logger.info({ rideId, added: fresh.length }, 'dispatch.queue.expanded');
   }
 
   const cand = s.queue[s.idx];
@@ -120,6 +159,16 @@ async function offerNext(rideId) {
   // Re-check the driver is still dispatchable right before the offer.
   const drv = await driverRepo.findById(cand.driverId);
   if (!drv || drv.is_online !== 1 || drv.availability !== 'available' || drv.kyc_status !== 'approved') {
+    logger.info(
+      {
+        rideId,
+        driverId: cand.driverId,
+        isOnline: drv?.is_online,
+        availability: drv?.availability,
+        kyc: drv?.kyc_status,
+      },
+      'dispatch.offer.skip — driver no longer dispatchable',
+    );
     s.idx += 1;
     return offerNext(rideId);
   }
@@ -146,9 +195,13 @@ async function offerNext(rideId) {
     data: { rideId: String(rideId) },
   });
 
-  logger.info({ rideId, driverId: cand.driverId, idx: s.idx }, 'offer sent');
+  logger.info(
+    { rideId, driverId: cand.driverId, idx: s.idx, distanceM: cand.distanceM, timeoutMs: OFFER_TIMEOUT_MS },
+    'dispatch.offer.sent',
+  );
 
   s.offerTimer = setTimeout(() => {
+    logger.info({ rideId, driverId: cand.driverId }, 'dispatch.offer.timeout');
     rideOfferRepo.markResponded(rideId, cand.driverId, 'timed_out').catch(() => {});
     realtime.toUser(s.offeredUserIds.get(cand.driverId), 'ride:offer_revoked', { rideId, reason: 'timeout' });
     s.idx += 1;
@@ -160,8 +213,12 @@ async function offerNext(rideId) {
  * @returns {Promise<{ok:boolean, reason?:string, ride?:object}>}
  */
 async function handleOfferResponse(rideId, driverId, accept) {
+  logger.info({ rideId, driverId, accept }, 'dispatch.offer.response');
   const s = state.get(rideId);
-  if (!s) return { ok: false, reason: 'expired' };
+  if (!s) {
+    logger.warn({ rideId, driverId }, 'dispatch.offer.response — no active dispatch (expired/taken)');
+    return { ok: false, reason: 'expired' };
+  }
 
   if (!accept) {
     await rideOfferRepo.markResponded(rideId, driverId, 'rejected').catch(() => {});
