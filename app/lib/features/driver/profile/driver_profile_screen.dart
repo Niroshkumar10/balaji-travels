@@ -107,68 +107,88 @@ class _State extends ConsumerState<DriverProfileScreen> {
     );
   }
 
+  Future<void> _logout() async {
+    await ref.read(authControllerProvider.notifier).logout();
+    if (mounted) context.go('/role');
+  }
+
   @override
   Widget build(BuildContext context) {
     final async = ref.watch(driverProfileProvider);
+    final auth = ref.watch(authControllerProvider);
+    final p = async.valueOrNull;
+    if (p != null) _hydrate(p);
+
+    final name = (p?.name?.trim().isNotEmpty ?? false)
+        ? p!.name!.trim()
+        : (auth.name?.trim().isNotEmpty ?? false)
+            ? auth.name!.trim()
+            : 'Driver';
+    final mobile = p?.mobile ?? auth.mobile ?? '';
+
     return Scaffold(
       appBar: RtAppBar(
         title: 'Profile',
         fallbackRoute: '/d/dashboard',
         showBack: widget.showBack,
       ),
-      body: async.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => _Failure(
-          message: '$e',
-          onRetry: () => ref.invalidate(driverProfileProvider),
-        ),
-        data: (p) {
-          if (p == null) {
-            return _Failure(
-              message: 'Could not load your profile.',
-              onRetry: () => ref.invalidate(driverProfileProvider),
-            );
-          }
-          _hydrate(p);
-          final displayName = (p.name?.trim().isNotEmpty ?? false) ? p.name! : 'Driver';
-          return RefreshIndicator(
-            onRefresh: () async => ref.refresh(driverProfileProvider.future),
-            child: LoadingOverlay(
-              busy: _busy,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                Center(
-                  child: Column(
-                    children: [
-                      const CircleAvatar(radius: 40, child: Icon(Icons.person, size: 40)),
-                      const SizedBox(height: 10),
-                      Text(displayName,
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleLarge
-                              ?.copyWith(fontWeight: FontWeight.w700)),
+      body: RefreshIndicator(
+        onRefresh: () async => ref.refresh(driverProfileProvider.future),
+        child: LoadingOverlay(
+          busy: _busy,
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              // ── header (always shown, from profile or auth) ──
+              Center(
+                child: Column(
+                  children: [
+                    const CircleAvatar(radius: 40, child: Icon(Icons.person, size: 40)),
+                    const SizedBox(height: 10),
+                    Text(name,
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w700)),
+                    if (mobile.isNotEmpty) ...[
                       const SizedBox(height: 2),
-                      Text('+91 ${p.mobile}',
+                      Text('+91 $mobile',
                           style: const TextStyle(color: AppColors.inkSoft)),
+                    ],
+                    if (p != null) ...[
                       const SizedBox(height: 8),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const Icon(Icons.star_rounded, color: AppColors.accent, size: 18),
+                          const Icon(Icons.star_rounded,
+                              color: AppColors.accent, size: 18),
                           Text(' ${p.ratingAvg.toStringAsFixed(1)} (${p.ratingCount})'),
                           const SizedBox(width: 10),
                           StatusPill(
                             'KYC ${p.kycStatus}',
-                            color: p.kycApproved ? AppColors.success : AppColors.info,
+                            color: p.kycApproved
+                                ? AppColors.success
+                                : AppColors.info,
                           ),
                         ],
                       ),
                     ],
-                  ),
+                  ],
                 ),
-                const SizedBox(height: 20),
-                TextField(controller: _name, decoration: const InputDecoration(labelText: 'Full name')),
+              ),
+              const SizedBox(height: 20),
+
+              // ── editable details + vehicles (needs the fetch) ──
+              if (p == null)
+                _DetailsUnavailable(
+                  loading: async.isLoading,
+                  onRetry: () => ref.invalidate(driverProfileProvider),
+                )
+              else ...[
+                const SectionHeader('Your details'),
+                TextField(
+                    controller: _name,
+                    decoration: const InputDecoration(labelText: 'Full name')),
                 const SizedBox(height: 12),
                 TextField(
                   controller: _email,
@@ -179,14 +199,16 @@ class _State extends ConsumerState<DriverProfileScreen> {
                 TextField(
                   controller: _license,
                   textCapitalization: TextCapitalization.characters,
-                  decoration: const InputDecoration(labelText: 'Driving licence number'),
+                  decoration:
+                      const InputDecoration(labelText: 'Driving licence number'),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
                 PrimaryButton(label: 'Save', onPressed: _save),
                 const SizedBox(height: 24),
                 Row(
                   children: [
-                    Text('Vehicles', style: Theme.of(context).textTheme.titleMedium),
+                    Text('Vehicles',
+                        style: Theme.of(context).textTheme.titleMedium),
                     const Spacer(),
                     TextButton.icon(
                       onPressed: _addVehicle,
@@ -195,92 +217,109 @@ class _State extends ConsumerState<DriverProfileScreen> {
                     ),
                   ],
                 ),
+                if (p.vehicles.isEmpty)
+                  const Text('No vehicle added yet.',
+                      style: TextStyle(color: AppColors.inkSoft, fontSize: 13)),
                 ...p.vehicles.map((v) => Card(
                       margin: const EdgeInsets.only(bottom: 8),
                       child: ListTile(
                         leading: Text(VehicleCategoryInfo.of(v.category).emoji,
                             style: const TextStyle(fontSize: 24)),
-                        title: Text(v.label.isEmpty ? VehicleCategoryInfo.of(v.category).name : v.label),
+                        title: Text(v.label.isEmpty
+                            ? VehicleCategoryInfo.of(v.category).name
+                            : v.label),
                         subtitle: Text('${plate(v.plateNo)} · doc: ${v.docStatus}'),
                         trailing: v.isActive
                             ? const Chip(label: Text('Active'))
                             : null,
                       ),
                     )),
-                const SizedBox(height: 24),
-                const Divider(),
-                const SizedBox(height: 8),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.notifications_rounded,
-                      color: AppColors.primary),
-                  title: const Text('Notifications'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () => context.push('/d/notifications'),
-                ),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading:
-                      const Icon(Icons.swap_horiz_rounded, color: AppColors.info),
-                  title: const Text('Switch to Ride'),
-                  onTap: () async {
-                    await ref.read(authControllerProvider.notifier).logout();
-                    if (context.mounted) context.go('/role');
-                  },
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    await ref.read(authControllerProvider.notifier).logout();
-                    if (context.mounted) context.go('/role');
-                  },
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.error,
-                    side: const BorderSide(color: AppColors.error),
-                    minimumSize: const Size.fromHeight(48),
-                  ),
-                  icon: const Icon(Icons.logout_rounded),
-                  label: const Text('Log out'),
-                ),
-                ],
+              ],
+
+              const SizedBox(height: 24),
+              const Divider(),
+              const SizedBox(height: 8),
+
+              // ── account (always available, even if the profile failed) ──
+              const SectionHeader('Account'),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.notifications_rounded,
+                    color: AppColors.primary),
+                title: const Text('Notifications'),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => context.push('/d/notifications'),
               ),
-            ),
-          );
-        },
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading:
+                    const Icon(Icons.savings_rounded, color: AppColors.secondary),
+                title: const Text('Wallet & payouts'),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => context.push('/d/wallet'),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading:
+                    const Icon(Icons.swap_horiz_rounded, color: AppColors.info),
+                title: const Text('Switch to Ride'),
+                onTap: _logout,
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _logout,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.error,
+                  side: const BorderSide(color: AppColors.error),
+                  minimumSize: const Size.fromHeight(48),
+                ),
+                icon: const Icon(Icons.logout_rounded),
+                label: const Text('Log out'),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
       ),
     );
   }
 }
 
-class _Failure extends StatelessWidget {
-  const _Failure({required this.message, required this.onRetry});
-  final String message;
+/// Inline placeholder for the details/vehicles block when `/drivers/me` hasn't
+/// loaded — the account actions above stay usable regardless.
+class _DetailsUnavailable extends StatelessWidget {
+  const _DetailsUnavailable({required this.loading, required this.onRetry});
+  final bool loading;
   final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.person_off_rounded, size: 52, color: AppColors.inkSoft),
-            const SizedBox(height: 12),
-            Text('Profile unavailable',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 6),
-            Text(message,
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.cardBorder),
+      ),
+      child: Column(
+        children: [
+          if (loading)
+            const CircularProgressIndicator()
+          else ...[
+            const Icon(Icons.cloud_off_rounded, color: AppColors.inkSoft),
+            const SizedBox(height: 8),
+            const Text("Couldn't load your details and vehicles.",
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: AppColors.inkSoft, fontSize: 13)),
-            const SizedBox(height: 16),
+                style: TextStyle(color: AppColors.inkSoft, fontSize: 13)),
+            const SizedBox(height: 12),
             FilledButton.tonalIcon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh_rounded, size: 18),
               label: const Text('Retry'),
             ),
           ],
-        ),
+        ],
       ),
     );
   }
