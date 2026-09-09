@@ -1,0 +1,51 @@
+{
+  "name": "redtaxi-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RedTaxi backend API + Socket.IO real-time layer",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "migrate": "node src/db/migrate.js up",
+    "migrate:down": "node src/db/migrate.js down",
+    "migrate:status": "node src/db/migrate.js status",
+    "db:check": "node src/db/check.js",
+    "seed": "node src/db/seed.js",
+    "demo:otp": "node scripts/demo-otp-flow.js",
+    "dev:memory": "cross-env DB_DRIVER=memory nodemon src/server.js",
+    "test": "cross-env NODE_ENV=test jest --runInBand",
+    "test:watch": "cross-env NODE_ENV=test jest --runInBand --watch",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "firebase-admin": "^12.7.0",
+    "helmet": "^8.0.0",
+    "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.11.5",
+    "nanoid": "^3.3.8",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
+    "rate-limit-redis": "^4.2.0",
+    "socket.io": "^4.8.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "eslint": "^9.17.0",
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.9",
+    "pino-pretty": "^13.0.0",
+    "socket.io-client": "^4.8.1",
+    "supertest": "^7.0.0"
+  }
+}

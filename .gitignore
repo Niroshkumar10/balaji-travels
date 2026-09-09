@@ -1,0 +1,43 @@
+# deps
+node_modules/
+**/node_modules/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+**/firebase-service-account.json
+**/local.properties
+*.pem
+*.key
+*.keystore
+*.jks
+key.properties
+
+# logs
+logs/
+*.log
+npm-debug.log*
+
+# build / coverage
+dist/
+build/
+**/build/
+coverage/
+.nyc_output/
+
+# flutter / dart
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/generated_plugin_registrant.*
+app/.dart_tool/
+app/build/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
