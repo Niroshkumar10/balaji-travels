@@ -172,17 +172,17 @@ function initSockets(httpServer) {
   realtime.bind(io);
   io.use(socketAuth);
 
-  io.on('connection', async (socket) => {
+  io.on('connection', (socket) => {
     const { userId, role } = socket.data;
     socket.join(`user:${userId}`);
     logger.debug({ userId, role, sid: socket.id }, 'socket connected');
 
-    try {
-      await joinActiveRideRoom(socket);
-    } catch (err) {
-      logger.debug({ err: err.message }, 'joinActiveRideRoom failed');
-    }
-
+    // Register every event handler SYNCHRONOUSLY, before any await. A client
+    // (the real app does this) emits its first event — driver:online,
+    // ride:request — in the same tick it receives `connect`. If the connection
+    // handler awaits anything (e.g. a DB round-trip) before `socket.on(...)`,
+    // that first packet lands with no listener and Socket.IO silently drops it,
+    // ack and all. Latent with a local DB, reproducible with a remote one.
     socket.on('ping', (_p, ack) => typeof ack === 'function' && ack({ ok: true, ts: Date.now(), userId, role }));
 
     if (role === 'customer') registerCustomer(socket);
@@ -191,6 +191,11 @@ function initSockets(httpServer) {
     socket.on('disconnect', (reason) => {
       logger.debug({ userId, role, sid: socket.id, reason }, 'socket disconnected');
     });
+
+    // Now the slow part — the socket can already receive events while this runs.
+    joinActiveRideRoom(socket).catch((err) =>
+      logger.debug({ err: err.message }, 'joinActiveRideRoom failed'),
+    );
   });
 
   return io;

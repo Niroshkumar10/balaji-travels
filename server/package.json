@@ -16,6 +16,7 @@
     "db:check": "node src/db/check.js",
     "seed": "node src/db/seed.js",
     "demo:otp": "node scripts/demo-otp-flow.js",
+    "driver:sim": "node scripts/driver-sim.js",
     "dev:memory": "cross-env DB_DRIVER=memory nodemon src/server.js",
     "test": "cross-env NODE_ENV=test jest --runInBand",
     "test:watch": "cross-env NODE_ENV=test jest --runInBand --watch",
