@@ -11,7 +11,8 @@ import '../../../state/providers.dart';
 import '../driver_controller.dart';
 
 class DriverProfileScreen extends ConsumerStatefulWidget {
-  const DriverProfileScreen({super.key});
+  const DriverProfileScreen({super.key, this.showBack = true});
+  final bool showBack;
   @override
   ConsumerState<DriverProfileScreen> createState() => _State();
 }
@@ -110,7 +111,11 @@ class _State extends ConsumerState<DriverProfileScreen> {
   Widget build(BuildContext context) {
     final async = ref.watch(driverProfileProvider);
     return Scaffold(
-      appBar: const RtAppBar(title: 'Profile & vehicle', fallbackRoute: '/d/dashboard'),
+      appBar: RtAppBar(
+        title: 'Profile',
+        fallbackRoute: '/d/dashboard',
+        showBack: widget.showBack,
+      ),
       body: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => EmptyState(icon: Icons.error_outline_rounded, title: 'Error', subtitle: '$e'),
@@ -184,12 +189,38 @@ class _State extends ConsumerState<DriverProfileScreen> {
                             : null,
                       ),
                     )),
-                const SizedBox(height: 16),
+                const SizedBox(height: 24),
+                const Divider(),
+                const SizedBox(height: 8),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.notifications_rounded,
+                      color: AppColors.primary),
+                  title: const Text('Notifications'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => context.push('/d/notifications'),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading:
+                      const Icon(Icons.swap_horiz_rounded, color: AppColors.info),
+                  title: const Text('Switch to Ride'),
+                  onTap: () async {
+                    await ref.read(authControllerProvider.notifier).logout();
+                    if (context.mounted) context.go('/role');
+                  },
+                ),
+                const SizedBox(height: 8),
                 OutlinedButton.icon(
                   onPressed: () async {
                     await ref.read(authControllerProvider.notifier).logout();
                     if (context.mounted) context.go('/role');
                   },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.error,
+                    side: const BorderSide(color: AppColors.error),
+                    minimumSize: const Size.fromHeight(48),
+                  ),
                   icon: const Icon(Icons.logout_rounded),
                   label: const Text('Log out'),
                 ),

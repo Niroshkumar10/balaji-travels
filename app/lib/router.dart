@@ -18,13 +18,10 @@ import 'features/customer/ride_request/where_to_screen.dart';
 import 'features/customer/saved_places/saved_places_screen.dart';
 import 'features/customer/support/support_screen.dart';
 import 'features/customer/tracking/ride_tracking_screen.dart';
-import 'features/driver/dashboard/driver_dashboard_screen.dart';
-import 'features/driver/earnings/earnings_screen.dart';
+import 'features/driver/driver_shell.dart';
 import 'features/driver/earnings/wallet_screen.dart';
-import 'features/driver/history/driver_history_screen.dart';
 import 'features/driver/notifications/driver_notifications_screen.dart';
 import 'features/driver/offer/ride_offer_screen.dart';
-import 'features/driver/profile/driver_profile_screen.dart';
 import 'features/driver/ride/driver_ride_screen.dart';
 import 'features/driver/setup/driver_setup_screen.dart';
 import 'features/onboarding/onboarding_screen.dart';
@@ -131,7 +128,10 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
 
       // ── driver ──
       GoRoute(path: '/d/setup', builder: (_, __) => const DriverSetupScreen()),
-      GoRoute(path: '/d/dashboard', builder: (_, __) => const DriverDashboardScreen()),
+      GoRoute(path: '/d/dashboard', builder: (_, __) => const DriverShell()),
+      GoRoute(path: '/d/earnings', builder: (_, __) => const DriverShell(initialTab: 1)),
+      GoRoute(path: '/d/history', builder: (_, __) => const DriverShell(initialTab: 2)),
+      GoRoute(path: '/d/profile', builder: (_, __) => const DriverShell(initialTab: 3)),
       GoRoute(
         path: '/d/offer/:id',
         builder: (_, s) => RideOfferScreen(rideId: int.parse(s.pathParameters['id']!)),
@@ -140,10 +140,7 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
         path: '/d/ride/:id',
         builder: (_, s) => DriverRideScreen(rideId: int.parse(s.pathParameters['id']!)),
       ),
-      GoRoute(path: '/d/earnings', builder: (_, __) => const EarningsScreen()),
       GoRoute(path: '/d/wallet', builder: (_, __) => const WalletScreen()),
-      GoRoute(path: '/d/history', builder: (_, __) => const DriverHistoryScreen()),
-      GoRoute(path: '/d/profile', builder: (_, __) => const DriverProfileScreen()),
       GoRoute(path: '/d/notifications', builder: (_, __) => const DriverNotificationsScreen()),
     ],
   );
