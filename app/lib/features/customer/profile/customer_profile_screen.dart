@@ -10,7 +10,7 @@ import '../../../state/providers.dart';
 
 final _profileProvider = FutureProvider.autoDispose<CustomerProfile?>((ref) async {
   final res = await ref.watch(profileRepoProvider).getCustomer();
-  return res.valueOrNull;
+  return res.when(ok: (p) => p, err: (e) => throw e);
 });
 
 class CustomerProfileScreen extends ConsumerStatefulWidget {

@@ -118,33 +118,51 @@ class _State extends ConsumerState<DriverProfileScreen> {
       ),
       body: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => EmptyState(icon: Icons.error_outline_rounded, title: 'Error', subtitle: '$e'),
+        error: (e, _) => _Failure(
+          message: '$e',
+          onRetry: () => ref.invalidate(driverProfileProvider),
+        ),
         data: (p) {
           if (p == null) {
-            return const EmptyState(icon: Icons.person_off_rounded, title: 'Profile unavailable');
+            return _Failure(
+              message: 'Could not load your profile.',
+              onRetry: () => ref.invalidate(driverProfileProvider),
+            );
           }
           _hydrate(p);
-          return LoadingOverlay(
-            busy: _busy,
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
+          final displayName = (p.name?.trim().isNotEmpty ?? false) ? p.name! : 'Driver';
+          return RefreshIndicator(
+            onRefresh: () async => ref.refresh(driverProfileProvider.future),
+            child: LoadingOverlay(
+              busy: _busy,
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
                 Center(
                   child: Column(
                     children: [
                       const CircleAvatar(radius: 40, child: Icon(Icons.person, size: 40)),
+                      const SizedBox(height: 10),
+                      Text(displayName,
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 2),
+                      Text('+91 ${p.mobile}',
+                          style: const TextStyle(color: AppColors.inkSoft)),
                       const SizedBox(height: 8),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           const Icon(Icons.star_rounded, color: AppColors.accent, size: 18),
                           Text(' ${p.ratingAvg.toStringAsFixed(1)} (${p.ratingCount})'),
+                          const SizedBox(width: 10),
+                          StatusPill(
+                            'KYC ${p.kycStatus}',
+                            color: p.kycApproved ? AppColors.success : AppColors.info,
+                          ),
                         ],
-                      ),
-                      const SizedBox(height: 4),
-                      StatusPill(
-                        'KYC ${p.kycStatus}',
-                        color: p.kycApproved ? AppColors.success : AppColors.info,
                       ),
                     ],
                   ),
@@ -224,10 +242,45 @@ class _State extends ConsumerState<DriverProfileScreen> {
                   icon: const Icon(Icons.logout_rounded),
                   label: const Text('Log out'),
                 ),
-              ],
+                ],
+              ),
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _Failure extends StatelessWidget {
+  const _Failure({required this.message, required this.onRetry});
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.person_off_rounded, size: 52, color: AppColors.inkSoft),
+            const SizedBox(height: 12),
+            Text('Profile unavailable',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
+            Text(message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: AppColors.inkSoft, fontSize: 13)),
+            const SizedBox(height: 16),
+            FilledButton.tonalIcon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text('Retry'),
+            ),
+          ],
+        ),
       ),
     );
   }

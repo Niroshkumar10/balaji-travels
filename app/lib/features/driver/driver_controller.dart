@@ -359,5 +359,7 @@ final driverControllerProvider =
 
 final driverProfileProvider = FutureProvider.autoDispose<DriverProfile?>((ref) async {
   final res = await ref.watch(profileRepoProvider).getDriver();
-  return res.valueOrNull;
+  // Surface the failure so the screen can show why + offer a retry, instead of
+  // collapsing every error into a blank "Profile unavailable".
+  return res.when(ok: (p) => p, err: (e) => throw e);
 });
