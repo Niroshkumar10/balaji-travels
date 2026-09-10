@@ -1,6 +1,7 @@
 import '../../../core/widgets/rt_app_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../../../core/util/formatters.dart';
@@ -8,7 +9,8 @@ import '../../../core/widgets/common_widgets.dart';
 import 'earnings_controller.dart';
 
 class EarningsScreen extends ConsumerStatefulWidget {
-  const EarningsScreen({super.key});
+  const EarningsScreen({super.key, this.showBack = true});
+  final bool showBack;
   @override
   ConsumerState<EarningsScreen> createState() => _State();
 }
@@ -22,7 +24,11 @@ class _State extends ConsumerState<EarningsScreen> {
     final ledger = ref.watch(ledgerProvider);
 
     return Scaffold(
-      appBar: const RtAppBar(title: 'Earnings', fallbackRoute: '/d/dashboard'),
+      appBar: RtAppBar(
+        title: 'Earnings',
+        fallbackRoute: '/d/dashboard',
+        showBack: widget.showBack,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -61,6 +67,13 @@ class _State extends ConsumerState<EarningsScreen> {
                 ),
               ),
             ),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: () => context.push('/d/wallet'),
+            style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+            icon: const Icon(Icons.savings_rounded, size: 18),
+            label: const Text('Wallet & withdraw'),
           ),
           const SizedBox(height: 20),
           Text('Recent activity', style: Theme.of(context).textTheme.titleMedium),

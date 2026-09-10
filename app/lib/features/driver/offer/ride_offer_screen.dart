@@ -70,8 +70,10 @@ class _State extends ConsumerState<RideOfferScreen> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
+    final ringValue = offer.expiresInSec == 0 ? 1.0 : _left / offer.expiresInSec;
+
     return Scaffold(
-      backgroundColor: AppColors.brand,
+      backgroundColor: AppColors.background,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(20),
@@ -85,20 +87,24 @@ class _State extends ConsumerState<RideOfferScreen> {
                     height: 84,
                     width: 84,
                     child: CircularProgressIndicator(
-                      value: (offer.expiresInSec == 0 ? 1 : _left / offer.expiresInSec),
+                      value: ringValue,
                       strokeWidth: 6,
-                      backgroundColor: Colors.white24,
-                      valueColor: const AlwaysStoppedAnimation(AppColors.accent),
+                      backgroundColor: AppColors.surfaceVariant,
+                      valueColor:
+                          const AlwaysStoppedAnimation(AppColors.primary),
                     ),
                   ),
                   Text('$_left',
                       style: const TextStyle(
-                          color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800)),
+                          fontSize: 28, fontWeight: FontWeight.w800)),
                 ],
               ),
               const SizedBox(height: 12),
-              const Text('New ride request',
-                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700)),
+              Text('New ride request',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w800)),
               const SizedBox(height: 20),
               Card(
                 child: Padding(
@@ -114,33 +120,51 @@ class _State extends ConsumerState<RideOfferScreen> {
                             '${distance(offer.distanceToPickupM)} to pickup',
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
-                          const Spacer(),
-                          Text(
-                            '~ ${money(offer.estFare)}',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(fontWeight: FontWeight.w800),
-                          ),
                         ],
                       ),
                       const Divider(height: 24),
                       _AddrRow(
                         icon: Icons.trip_origin,
-                        color: AppColors.brand,
+                        color: AppColors.mapPickup,
+                        label: 'PICKUP LOCATION',
                         text: offer.pickup.addr ?? 'Pickup point',
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 14),
                       _AddrRow(
                         icon: Icons.place_rounded,
-                        color: AppColors.danger,
+                        color: AppColors.mapDrop,
+                        label: 'DROP LOCATION',
                         text: offer.drop.addr ?? 'Destination',
+                      ),
+                      const Divider(height: 24),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: AppColors.surface,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            const Text('Estimated fare',
+                                style: TextStyle(color: AppColors.inkSoft)),
+                            const Spacer(),
+                            Text(
+                              money(offer.estFare),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleLarge
+                                  ?.copyWith(fontWeight: FontWeight.w800),
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 8),
                       Align(
                         alignment: Alignment.centerLeft,
-                        child: Text('Trip ${distance(offer.tripDistanceM)}',
-                            style: const TextStyle(color: AppColors.inkSoft, fontSize: 12)),
+                        child: Text('Trip distance ${distance(offer.tripDistanceM)}',
+                            style: const TextStyle(
+                                color: AppColors.inkSoft, fontSize: 12)),
                       ),
                     ],
                   ),
@@ -150,23 +174,22 @@ class _State extends ConsumerState<RideOfferScreen> {
               Row(
                 children: [
                   Expanded(
-                    child: OutlinedButton(
-                      style: OutlinedButton.styleFrom(
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.error,
                         foregroundColor: Colors.white,
-                        side: const BorderSide(color: Colors.white54),
                         minimumSize: const Size.fromHeight(56),
                       ),
                       onPressed: () => _respond(false),
-                      child: const Text('Decline'),
+                      child: const Text('Reject'),
                     ),
                   ),
                   const SizedBox(width: 14),
                   Expanded(
-                    flex: 2,
                     child: FilledButton(
                       style: FilledButton.styleFrom(
-                        backgroundColor: AppColors.accent,
-                        foregroundColor: AppColors.ink,
+                        backgroundColor: AppColors.success,
+                        foregroundColor: Colors.white,
                         minimumSize: const Size.fromHeight(56),
                       ),
                       onPressed: () => _respond(true),
@@ -184,18 +207,45 @@ class _State extends ConsumerState<RideOfferScreen> {
 }
 
 class _AddrRow extends StatelessWidget {
-  const _AddrRow({required this.icon, required this.color, required this.text});
+  const _AddrRow({
+    required this.icon,
+    required this.color,
+    required this.label,
+    required this.text,
+  });
   final IconData icon;
   final Color color;
+  final String label;
   final String text;
 
   @override
   Widget build(BuildContext context) {
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, size: 18, color: color),
-        const SizedBox(width: 10),
-        Expanded(child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis)),
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Icon(icon, size: 18, color: color),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label,
+                  style: const TextStyle(
+                      color: AppColors.inkSoft,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.5)),
+              const SizedBox(height: 2),
+              Text(text,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ),
       ],
     );
   }

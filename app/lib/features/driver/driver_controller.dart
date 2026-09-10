@@ -40,6 +40,8 @@ class DriverState {
     this.availability = 'offline',
     this.ride,
     this.offer,
+    this.customerLat,
+    this.customerLng,
     this.busy = false,
     this.error,
   });
@@ -48,16 +50,21 @@ class DriverState {
   final String availability;
   final Ride? ride;
   final PendingOffer? offer;
+  final double? customerLat;
+  final double? customerLng;
   final bool busy;
   final String? error;
 
   bool get onTrip => ride != null && ride!.status.isActive;
+  bool get hasCustomerLocation => customerLat != null && customerLng != null;
 
   DriverState copyWith({
     bool? online,
     String? availability,
     Ride? ride,
     Object? offer = _sentinel,
+    double? customerLat,
+    double? customerLng,
     bool? busy,
     Object? error = _sentinel,
   }) =>
@@ -66,6 +73,8 @@ class DriverState {
         availability: availability ?? this.availability,
         ride: ride ?? this.ride,
         offer: identical(offer, _sentinel) ? this.offer : offer as PendingOffer?,
+        customerLat: customerLat ?? this.customerLat,
+        customerLng: customerLng ?? this.customerLng,
         busy: busy ?? this.busy,
         error: identical(error, _sentinel) ? this.error : error as String?,
       );
@@ -98,8 +107,15 @@ class DriverController extends StateNotifier<DriverState> {
 
   late final StreamSubscription<SocketEvent> _sub;
   StreamSubscription<Position>? _posSub;
+  Timer? _heartbeatTimer;
+  Position? _lastPos;
 
   int? get _rideId => state.ride?.id;
+
+  /// How often to force a keep-alive ping regardless of movement. Must be well
+  /// under the server's DRIVER_LOCATION_STALE_SECONDS / offline-sweep window,
+  /// otherwise a parked driver silently drops out of dispatch.
+  static const _heartbeatEvery = Duration(seconds: 20);
 
   // ── presence ──────────────────────────────────────────────────────────────
   Future<String?> goOnline() async {
@@ -114,6 +130,7 @@ class DriverController extends StateNotifier<DriverState> {
       state = state.copyWith(busy: false);
       return 'Could not get your location';
     }
+    _lastPos = pos;
     final ack = await _socket.emitAck('driver:online', {
       'lat': pos.latitude,
       'lng': pos.longitude,
@@ -143,27 +160,69 @@ class DriverController extends StateNotifier<DriverState> {
         return err;
       }
     }
-    _posSub?.cancel();
-    _posSub = null;
+    _stopLocationStream();
     state = state.copyWith(online: false, availability: 'offline', busy: false);
     return null;
+  }
+
+  /// Make sure GPS is streaming while a trip is active even if the app was
+  /// cold-started onto an in-progress ride (i.e. [goOnline] wasn't called this
+  /// session). The customer's tracking map depends on these pings.
+  Future<void> _ensureTripLocationStream() async {
+    if (_posSub != null || !state.onTrip) return;
+    final perm = await _location.ensurePermission();
+    if (perm.granted) _startLocationStream();
   }
 
   void _startLocationStream() {
     _posSub?.cancel();
     _posSub = _location.stream(distanceFilterM: 12).listen((pos) {
-      final payload = {
-        'lat': pos.latitude,
-        'lng': pos.longitude,
-        'bearing': pos.heading,
-        'speedKmph': pos.speed * 3.6,
-      };
-      if (state.onTrip && _rideId != null) {
-        _socket.emit('driver:location', {...payload, 'rideId': _rideId});
-      } else {
-        _socket.emit('driver:heartbeat', payload);
-      }
+      _lastPos = pos;
+      _pingLocation(pos);
     });
+
+    // Movement-based pings stop the moment the driver stands still; this timer
+    // keeps the presence fresh so dispatch (and the offline sweep) keep them in.
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(_heartbeatEvery, (_) async {
+      if (!state.online && !state.onTrip) return;
+      final pos = await _location.current() ?? _lastPos;
+      if (pos == null) return;
+      _lastPos = pos;
+      _pingLocation(pos, restFallback: true);
+    });
+  }
+
+  void _pingLocation(Position pos, {bool restFallback = false}) {
+    final payload = {
+      'lat': pos.latitude,
+      'lng': pos.longitude,
+      'bearing': pos.heading,
+      'speedKmph': pos.speed * 3.6,
+    };
+    if (state.onTrip && _rideId != null) {
+      _socket.emit('driver:location', {...payload, 'rideId': _rideId});
+    } else {
+      _socket.emit('driver:heartbeat', payload);
+    }
+    // The socket emit is fire-and-forget and silently no-ops when disconnected;
+    // on the periodic tick also hit REST so a dropped socket never makes the
+    // driver invisible to dispatch.
+    if (restFallback) {
+      unawaited(_profiles.heartbeat(
+        lat: pos.latitude,
+        lng: pos.longitude,
+        bearing: pos.heading,
+        speedKmph: pos.speed * 3.6,
+      ));
+    }
+  }
+
+  void _stopLocationStream() {
+    _posSub?.cancel();
+    _posSub = null;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
   }
 
   // ── dispatch offers ──────────────────────────────────────────────────────
@@ -242,7 +301,10 @@ class DriverController extends StateNotifier<DriverState> {
           ride: ride,
           availability: ride != null && ride.status.isActive ? 'on_trip' : state.availability,
         );
-        if (ride != null) _socket.emitAck('ride:resync', {'rideId': ride.id});
+        if (ride != null) {
+          _socket.emitAck('ride:resync', {'rideId': ride.id});
+          _ensureTripLocationStream();
+        }
       },
       err: (_) {},
     );
@@ -296,6 +358,13 @@ class DriverController extends StateNotifier<DriverState> {
         if (state.offer?.rideId == (d['rideId'] as num?)?.toInt()) {
           state = state.copyWith(offer: null);
         }
+      case 'ride:customer_location':
+        if (_rideId != null && (d['rideId'] as num?)?.toInt() == _rideId) {
+          state = state.copyWith(
+            customerLat: (d['lat'] as num?)?.toDouble(),
+            customerLng: (d['lng'] as num?)?.toDouble(),
+          );
+        }
       case 'ride:assigned':
       case 'ride:status':
       case 'ride:cancelled':
@@ -313,7 +382,7 @@ class DriverController extends StateNotifier<DriverState> {
   @override
   void dispose() {
     _sub.cancel();
-    _posSub?.cancel();
+    _stopLocationStream();
     super.dispose();
   }
 }
@@ -331,5 +400,7 @@ final driverControllerProvider =
 
 final driverProfileProvider = FutureProvider.autoDispose<DriverProfile?>((ref) async {
   final res = await ref.watch(profileRepoProvider).getDriver();
-  return res.valueOrNull;
+  // Surface the failure so the screen can show why + offer a retry, instead of
+  // collapsing every error into a blank "Profile unavailable".
+  return res.when(ok: (p) => p, err: (e) => throw e);
 });

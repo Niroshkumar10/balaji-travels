@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../infra/db');
+const env = require('../config/env');
 const { boundingBox, haversineMeters } = require('../services/geoService');
 
 const driverLocationRepo = {
@@ -38,7 +39,17 @@ const driverLocationRepo = {
    * Coarse bounding-box filter in SQL (uses idx_driver_loc_box), exact Haversine
    * sort in JS on the survivors.
    */
-  async nearby({ lat, lng, radiusKm, categories, staleSeconds = 60, limit = 20 }, ctx = db) {
+  async nearby(
+    {
+      lat,
+      lng,
+      radiusKm,
+      categories,
+      staleSeconds = env.DRIVER_LOCATION_STALE_SECONDS,
+      limit = 20,
+    },
+    ctx = db,
+  ) {
     const box = boundingBox(lat, lng, radiusKm);
     const catFilter =
       Array.isArray(categories) && categories.length
@@ -80,6 +91,60 @@ const driverLocationRepo = {
       .filter((r) => r.distance_m <= radiusKm * 1000)
       .sort((a, b) => a.distance_m - b.distance_m)
       .slice(0, limit);
+  },
+
+  /**
+   * Why is `nearby` returning nothing? Counts drivers surviving each filter
+   * stage so a "no drivers found" can name the exact cause in the logs.
+   */
+  async diagnose({ lat, lng, radiusKm, category, staleSeconds = env.DRIVER_LOCATION_STALE_SECONDS }, ctx = db) {
+    const box = boundingBox(lat, lng, radiusKm);
+    const row = await ctx.queryOne(
+      `SELECT
+         (SELECT COUNT(*) FROM rt_drivers WHERE is_online = 1) AS online,
+         (SELECT COUNT(*) FROM rt_drivers WHERE is_online = 1 AND availability = 'available') AS available,
+         (SELECT COUNT(*) FROM rt_drivers WHERE is_online = 1 AND availability = 'available' AND kyc_status = 'approved') AS kyc_ok,
+         (SELECT COUNT(*)
+            FROM rt_drivers d JOIN rt_driver_locations dl ON dl.driver_id = d.id
+           WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved') AS has_location,
+         (SELECT COUNT(*)
+            FROM rt_drivers d JOIN rt_driver_locations dl ON dl.driver_id = d.id
+           WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
+             AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)) AS fresh_location,
+         (SELECT COUNT(*)
+            FROM rt_drivers d JOIN rt_driver_locations dl ON dl.driver_id = d.id
+           WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
+             AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
+             AND dl.lat BETWEEN :latMin AND :latMax AND dl.lng BETWEEN :lngMin AND :lngMax) AS in_box,
+         (SELECT COUNT(*)
+            FROM rt_drivers d
+            JOIN rt_driver_locations dl ON dl.driver_id = d.id
+            JOIN rt_vehicles v ON v.id = d.current_vehicle_id AND v.is_active = 1
+           WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
+             AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
+             AND dl.lat BETWEEN :latMin AND :latMax AND dl.lng BETWEEN :lngMin AND :lngMax
+             AND v.category = :category) AS category_match`,
+      {
+        staleSeconds,
+        latMin: box.latMin,
+        latMax: box.latMax,
+        lngMin: box.lngMin,
+        lngMax: box.lngMax,
+        category,
+      },
+    );
+    return {
+      online: Number(row?.online ?? 0),
+      available: Number(row?.available ?? 0),
+      kycApproved: Number(row?.kyc_ok ?? 0),
+      hasLocationRow: Number(row?.has_location ?? 0),
+      freshLocation: Number(row?.fresh_location ?? 0),
+      insideRadiusBox: Number(row?.in_box ?? 0),
+      categoryMatch: Number(row?.category_match ?? 0),
+      staleSeconds,
+      radiusKm,
+      category,
+    };
   },
 
   /** Append a throttled breadcrumb during an active ride. */

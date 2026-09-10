@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -5,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app.dart';
 import 'core/auth/session.dart';
 import 'core/push/push_service.dart';
+import 'core/widgets/map_markers.dart';
 import 'state/providers.dart';
 
 Future<void> main() async {
@@ -14,6 +17,10 @@ Future<void> main() async {
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
+
+  // Pre-render the custom map marker bitmaps so the first map that needs them
+  // (home / tracking) already has them cached. Non-fatal if it fails.
+  unawaited(MapMarkers.instance.ensureBuilt());
 
   final session = await Session.load();
 

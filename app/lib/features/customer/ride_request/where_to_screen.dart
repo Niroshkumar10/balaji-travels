@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/util/debouncer.dart';
 import '../../../core/util/formatters.dart';
 import '../../../core/widgets/common_widgets.dart';
+import '../../../core/widgets/map_markers.dart';
+import '../../../core/widgets/map_view.dart';
 import '../../../state/providers.dart';
 import '../ride_session_controller.dart';
 
@@ -73,8 +76,18 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
     }
   }
 
+  bool get _placesReady =>
+      _pickup != null &&
+      _drop != null &&
+      MapView.isRealLatLng(_pickup!.lat, _pickup!.lng) &&
+      MapView.isRealLatLng(_drop!.lat, _drop!.lng);
+
   Future<void> _loadFares() async {
     if (_pickup == null || _drop == null) return;
+    if (!_placesReady) {
+      showError(context, 'Pick a valid pickup and destination from search first.');
+      return;
+    }
     setState(() => _busy = true);
     final res = await ref.read(rideRepoProvider).estimate(pickup: _pickup!, drop: _drop!);
     if (!mounted) return;
@@ -105,6 +118,10 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
 
   Future<void> _confirm() async {
     if (_pickup == null || _drop == null || _selected == null) return;
+    if (!_placesReady) {
+      showError(context, 'Pick a valid pickup and destination from search first.');
+      return;
+    }
     setState(() => _busy = true);
     final res = await ref.read(rideRepoProvider).create(
           pickup: _pickup!,
@@ -179,7 +196,7 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
         const SizedBox(height: 24),
         PrimaryButton(
           label: 'See fares',
-          onPressed: (_pickup != null && _drop != null) ? _loadFares : null,
+          onPressed: _placesReady ? _loadFares : null,
         ),
       ],
     );
@@ -189,13 +206,26 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
     final est = _estimate!;
     return Column(
       children: [
+        if (_placesReady)
+          RoutePreviewMap(
+            pickup: _pickup!,
+            drop: _drop!,
+            polyline: est.route.polyline,
+            height: 190,
+          ),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(16),
           color: AppColors.canvas,
-          child: Text(
-            '${distance(est.route.distanceM)} · about ${duration(est.route.durationS)}',
-            style: const TextStyle(color: AppColors.inkSoft),
+          child: Row(
+            children: [
+              const Icon(Icons.route_rounded, size: 18, color: AppColors.inkSoft),
+              const SizedBox(width: 8),
+              Text(
+                '${distance(est.route.distanceM)} · about ${duration(est.route.durationS)}',
+                style: const TextStyle(color: AppColors.inkSoft),
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -267,13 +297,35 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        if (_placesReady) ...[
+          ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: RoutePreviewMap(
+              pickup: _pickup!,
+              drop: _drop!,
+              polyline: _estimate?.route.polyline,
+              height: 170,
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         SectionCard(
           child: Column(
             children: [
-              InfoRow('Pickup', _pickup?.addr ?? '—'),
-              const Divider(),
-              InfoRow('Destination', _drop?.addr ?? '—'),
-              const Divider(),
+              _AddrRow(
+                icon: Icons.trip_origin,
+                color: AppColors.brand,
+                label: 'Pickup',
+                value: _pickup?.addr,
+              ),
+              const Divider(height: 20),
+              _AddrRow(
+                icon: Icons.place_rounded,
+                color: AppColors.danger,
+                label: 'Destination',
+                value: _drop?.addr,
+              ),
+              const Divider(height: 20),
               InfoRow('Vehicle', VehicleCategoryInfo.of(o.category).name),
               InfoRow('Fare estimate', money(o.fare)),
               if (_promoApplied != null)
@@ -329,6 +381,55 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
         const SizedBox(height: 20),
         PrimaryButton(label: 'Confirm ride', onPressed: _confirm),
       ],
+    );
+  }
+}
+
+/// Label-over-address row used on the confirm card — long addresses wrap
+/// cleanly instead of overflowing the row.
+class _AddrRow extends StatelessWidget {
+  const _AddrRow({
+    required this.icon,
+    required this.color,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String label;
+  final String? value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Icon(icon, size: 18, color: color),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: const TextStyle(
+                        color: AppColors.inkSoft, fontSize: 12)),
+                const SizedBox(height: 2),
+                Text(
+                  value ?? '—',
+                  style: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w600, height: 1.3),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -428,6 +529,122 @@ class _PayChip extends StatelessWidget {
   }
 }
 
+/// Small non-scrolling map that shows the pickup, drop and (if available) the
+/// real route between them. Used on the fare + confirm steps so the rider sees
+/// the trip before booking.
+class RoutePreviewMap extends StatefulWidget {
+  const RoutePreviewMap({
+    super.key,
+    required this.pickup,
+    required this.drop,
+    this.polyline,
+    this.height = 190,
+  });
+
+  final LatLngPoint pickup;
+  final LatLngPoint drop;
+  final String? polyline;
+  final double height;
+
+  @override
+  State<RoutePreviewMap> createState() => _RoutePreviewMapState();
+}
+
+class _RoutePreviewMapState extends State<RoutePreviewMap> {
+  final _mapKey = GlobalKey<MapViewState>();
+
+  LatLng get _p => LatLng(widget.pickup.lat, widget.pickup.lng);
+  LatLng get _d => LatLng(widget.drop.lat, widget.drop.lng);
+  bool get _pOk => MapView.isRealLatLng(widget.pickup.lat, widget.pickup.lng);
+  bool get _dOk => MapView.isRealLatLng(widget.drop.lat, widget.drop.lng);
+
+  void _fit() {
+    final pts = <LatLng>[
+      if (_pOk) _p,
+      if (_dOk) _d,
+    ];
+    final poly = widget.polyline;
+    if (poly != null && poly.isNotEmpty) {
+      pts.addAll(MapView.decodePolyline(poly).where(
+          (q) => MapView.isRealLatLng(q.latitude, q.longitude)));
+    }
+    final map = _mapKey.currentState;
+    if (map == null || pts.isEmpty) return;
+    pts.length == 1 ? map.moveTo(pts.first, zoom: 15) : map.fitTo(pts, padding: 44);
+  }
+
+  @override
+  void didUpdateWidget(covariant RoutePreviewMap old) {
+    super.didUpdateWidget(old);
+    if (old.polyline != widget.polyline ||
+        old.pickup.lat != widget.pickup.lat ||
+        old.drop.lat != widget.drop.lat) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _fit());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mk = MapMarkers.instance;
+    return SizedBox(
+      height: widget.height,
+      child: MapView(
+        key: _mapKey,
+        initial: _pOk ? _p : (_dOk ? _d : const LatLng(20.5937, 78.9629)),
+        markers: {
+          if (_pOk)
+            Marker(
+              markerId: const MarkerId('pickup'),
+              position: _p,
+              icon: mk.pickup,
+              anchor: const Offset(0.5, 1),
+            ),
+          if (_dOk)
+            Marker(
+              markerId: const MarkerId('drop'),
+              position: _d,
+              icon: mk.drop,
+              anchor: const Offset(0.5, 1),
+            ),
+        },
+        polylines: {
+          if (widget.polyline != null && widget.polyline!.isNotEmpty)
+            Polyline(
+              polylineId: const PolylineId('route'),
+              points: MapView.decodePolyline(widget.polyline!),
+              color: AppColors.mapRoute,
+              width: 5,
+            ),
+        },
+        onMapCreated: (_) =>
+            WidgetsBinding.instance.addPostFrameCallback((_) => _fit()),
+      ),
+    );
+  }
+}
+
+class _SearchHint extends StatelessWidget {
+  const _SearchHint({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 44, color: AppColors.inkSoft),
+              const SizedBox(height: 12),
+              Text(text,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AppColors.inkSoft)),
+            ],
+          ),
+        ),
+      );
+}
+
 /// Autocomplete search sheet backed by the server-proxied Places API.
 class _PlaceSearchSheet extends ConsumerStatefulWidget {
   const _PlaceSearchSheet({required this.title, this.origin});
@@ -443,6 +660,7 @@ class _PlaceSearchSheetState extends ConsumerState<_PlaceSearchSheet> {
   final _debouncer = Debouncer();
   List<PlacePrediction> _results = [];
   bool _loading = false;
+  bool _serviceDown = false;
 
   @override
   void dispose() {
@@ -464,25 +682,39 @@ class _PlaceSearchSheetState extends ConsumerState<_PlaceSearchSheet> {
             lng: widget.origin?.lng,
           );
       if (!mounted) return;
+      final all = res.valueOrNull ?? const <PlacePrediction>[];
+      // Only predictions we can actually resolve to coordinates are useful —
+      // ones without a placeId (e.g. when the server has no maps key) would
+      // otherwise be picked and collapse to (0, 0).
+      final usable =
+          all.where((p) => (p.placeId ?? '').isNotEmpty).toList();
       setState(() {
         _loading = false;
-        _results = res.valueOrNull ?? [];
+        _results = usable;
+        _serviceDown = all.isNotEmpty && usable.isEmpty;
       });
     });
   }
 
   Future<void> _choose(PlacePrediction p) async {
-    if (p.placeId == null) {
-      Navigator.pop(context, LatLngPoint(lat: 0, lng: 0, addr: p.description));
+    final id = p.placeId;
+    if (id == null || id.isEmpty) {
+      showError(context, 'Place search is unavailable right now. Try again shortly.');
       return;
     }
-    final res = await ref.read(miscRepoProvider).placeDetails(p.placeId!);
+    final res = await ref.read(miscRepoProvider).placeDetails(id);
     if (!mounted) return;
     res.when(
-      ok: (loc) => Navigator.pop(
-        context,
-        LatLngPoint(lat: loc.lat, lng: loc.lng, addr: loc.addr ?? p.description),
-      ),
+      ok: (loc) {
+        if (!MapView.isRealLatLng(loc.lat, loc.lng)) {
+          showError(context, "Couldn't locate that place. Pick another result.");
+          return;
+        }
+        Navigator.pop(
+          context,
+          LatLngPoint(lat: loc.lat, lng: loc.lng, addr: loc.addr ?? p.description),
+        );
+      },
       err: (e) => showError(context, e.message),
     );
   }
@@ -512,20 +744,28 @@ class _PlaceSearchSheetState extends ConsumerState<_PlaceSearchSheet> {
             ),
             if (_loading) const LinearProgressIndicator(minHeight: 2),
             Expanded(
-              child: ListView.separated(
-                controller: controller,
-                itemCount: _results.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, i) {
-                  final p = _results[i];
-                  return ListTile(
-                    leading: const Icon(Icons.location_on_outlined),
-                    title: Text(p.mainText ?? p.description),
-                    subtitle: p.secondaryText != null ? Text(p.secondaryText!) : null,
-                    onTap: () => _choose(p),
-                  );
-                },
-              ),
+              child: _serviceDown
+                  ? const _SearchHint(
+                      icon: Icons.cloud_off_rounded,
+                      text: 'Place search is unavailable right now.\n'
+                          'Check your connection and try again.',
+                    )
+                  : ListView.separated(
+                      controller: controller,
+                      itemCount: _results.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (_, i) {
+                        final p = _results[i];
+                        return ListTile(
+                          leading: const Icon(Icons.location_on_outlined),
+                          title: Text(p.mainText ?? p.description),
+                          subtitle: p.secondaryText != null
+                              ? Text(p.secondaryText!)
+                              : null,
+                          onTap: () => _choose(p),
+                        );
+                      },
+                    ),
             ),
           ],
         ),

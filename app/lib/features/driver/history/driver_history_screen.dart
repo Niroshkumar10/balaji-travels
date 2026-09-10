@@ -13,68 +13,114 @@ final _driverHistoryProvider = FutureProvider.autoDispose<List<Ride>>((ref) asyn
   return res.valueOrNull ?? const [];
 });
 
-class DriverHistoryScreen extends ConsumerWidget {
-  const DriverHistoryScreen({super.key});
+class DriverHistoryScreen extends ConsumerStatefulWidget {
+  const DriverHistoryScreen({super.key, this.showBack = true});
+  final bool showBack;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DriverHistoryScreen> createState() => _State();
+}
+
+class _State extends ConsumerState<DriverHistoryScreen> {
+  String _filter = 'all'; // all | completed | cancelled
+
+  bool _matches(Ride r) => switch (_filter) {
+        'completed' => r.status == RideStatus.completed,
+        'cancelled' => r.status.isCancelled,
+        _ => true,
+      };
+
+  @override
+  Widget build(BuildContext context) {
     final async = ref.watch(_driverHistoryProvider);
     return Scaffold(
-      appBar: const RtAppBar(title: 'Trip history', fallbackRoute: '/d/dashboard'),
+      appBar: RtAppBar(
+        title: 'Trips',
+        fallbackRoute: '/d/dashboard',
+        showBack: widget.showBack,
+      ),
       body: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => EmptyState(icon: Icons.error_outline_rounded, title: 'Error', subtitle: '$e'),
-        data: (rides) {
-          if (rides.isEmpty) {
-            return const EmptyState(icon: Icons.history_rounded, title: 'No trips yet');
-          }
+        error: (e, _) =>
+            EmptyState(icon: Icons.error_outline_rounded, title: 'Error', subtitle: '$e'),
+        data: (all) {
+          final rides = all.where(_matches).toList();
           return RefreshIndicator(
             onRefresh: () async => ref.refresh(_driverHistoryProvider.future),
-            child: ListView.separated(
+            child: ListView(
               padding: const EdgeInsets.all(16),
-              itemCount: rides.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
-              itemBuilder: (_, i) {
-                final r = rides[i];
-                final cancelled = r.status.isCancelled;
-                return Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: Row(
-                      children: [
-                        Text(VehicleCategoryInfo.of(r.vehicleCategory).emoji,
-                            style: const TextStyle(fontSize: 24)),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(r.dropAddr ?? r.ref,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context).textTheme.titleSmall),
-                              Text(
-                                '${dateTimeLabel(r.requestedAt)} · ${distance(r.distanceM)}',
-                                style: const TextStyle(color: AppColors.inkSoft, fontSize: 12),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Text(
-                          cancelled ? '—' : money(r.finalFare ?? r.estFare),
-                          style: TextStyle(
-                            fontWeight: FontWeight.w800,
-                            color: cancelled ? AppColors.inkSoft : AppColors.success,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
+              children: [
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'all', label: Text('All')),
+                    ButtonSegment(value: 'completed', label: Text('Completed')),
+                    ButtonSegment(value: 'cancelled', label: Text('Cancelled')),
+                  ],
+                  selected: {_filter},
+                  onSelectionChanged: (s) => setState(() => _filter = s.first),
+                ),
+                const SizedBox(height: 16),
+                if (rides.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 60),
+                    child: EmptyState(
+                        icon: Icons.history_rounded, title: 'No trips here'),
+                  )
+                else
+                  ...rides.map((r) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _TripCard(ride: r),
+                      )),
+              ],
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _TripCard extends StatelessWidget {
+  const _TripCard({required this.ride});
+  final Ride ride;
+
+  @override
+  Widget build(BuildContext context) {
+    final cancelled = ride.status.isCancelled;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            Text(VehicleCategoryInfo.of(ride.vehicleCategory).emoji,
+                style: const TextStyle(fontSize: 24)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(ride.dropAddr ?? ride.ref,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${dateTimeLabel(ride.requestedAt)} · ${distance(ride.distanceM)}',
+                    style:
+                        const TextStyle(color: AppColors.inkSoft, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            Text(
+              cancelled ? '—' : money(ride.finalFare ?? ride.estFare),
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                color: cancelled ? AppColors.inkSoft : AppColors.success,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

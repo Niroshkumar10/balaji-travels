@@ -13,7 +13,9 @@ class RideSessionState {
     this.driverLat,
     this.driverLng,
     this.driverBearing,
+    this.driverSpeedKmph,
     this.etaSeconds,
+    this.driverUpdatedAt,
     this.loading = false,
     this.error,
   });
@@ -22,16 +24,25 @@ class RideSessionState {
   final double? driverLat;
   final double? driverLng;
   final double? driverBearing;
+  final double? driverSpeedKmph;
   final int? etaSeconds;
+  final DateTime? driverUpdatedAt;
   final bool loading;
   final String? error;
+
+  bool get hasDriverLocation => driverLat != null && driverLng != null;
+  bool get driverLocationStale =>
+      driverUpdatedAt != null &&
+      DateTime.now().difference(driverUpdatedAt!).inSeconds > 20;
 
   RideSessionState copyWith({
     Ride? ride,
     double? driverLat,
     double? driverLng,
     double? driverBearing,
+    double? driverSpeedKmph,
     int? etaSeconds,
+    DateTime? driverUpdatedAt,
     bool? loading,
     String? error,
     bool clearError = false,
@@ -41,7 +52,9 @@ class RideSessionState {
         driverLat: driverLat ?? this.driverLat,
         driverLng: driverLng ?? this.driverLng,
         driverBearing: driverBearing ?? this.driverBearing,
+        driverSpeedKmph: driverSpeedKmph ?? this.driverSpeedKmph,
         etaSeconds: etaSeconds ?? this.etaSeconds,
+        driverUpdatedAt: driverUpdatedAt ?? this.driverUpdatedAt,
         loading: loading ?? this.loading,
         error: clearError ? null : (error ?? this.error),
       );
@@ -79,6 +92,8 @@ class RideSessionController extends StateNotifier<RideSessionState> {
           ride: ride,
           driverLat: ride.driverLat,
           driverLng: ride.driverLng,
+          driverBearing: ride.driverBearing,
+          driverUpdatedAt: ride.driverLat != null ? DateTime.now() : null,
         );
         _socket.emitAck('ride:resync', {'rideId': rideId});
       },
@@ -93,17 +108,26 @@ class RideSessionController extends StateNotifier<RideSessionState> {
     res.when(
       ok: (ride) => state = state.copyWith(
         ride: ride,
-        driverLat: ride.driverLat,
-        driverLng: ride.driverLng,
+        // keep the live socket-driven driver position; only fall back to the
+        // ride record's if we have nothing yet
+        driverLat: state.driverLat ?? ride.driverLat,
+        driverLng: state.driverLng ?? ride.driverLng,
       ),
       err: (_) {/* keep last known */},
     );
   }
 
+  /// Share the customer's position with the assigned driver (driver app shows
+  /// it as a second marker). Cheap fire-and-forget.
+  void pushMyLocation(double lat, double lng) {
+    final id = _rideId;
+    if (id == null) return;
+    _socket.emit('customer:location', {'rideId': id, 'lat': lat, 'lng': lng});
+  }
+
   void _onEvent(SocketEvent e) {
     final data = e.data;
     final id = _rideId;
-    // ride:driver_location arrives even before we've loaded — accept if it matches
     final evtRideId = (data['rideId'] as num?)?.toInt();
     if (id != null && evtRideId != null && evtRideId != id) return;
 
@@ -113,7 +137,9 @@ class RideSessionController extends StateNotifier<RideSessionState> {
           driverLat: (data['lat'] as num?)?.toDouble(),
           driverLng: (data['lng'] as num?)?.toDouble(),
           driverBearing: (data['bearing'] as num?)?.toDouble(),
+          driverSpeedKmph: (data['speedKmph'] as num?)?.toDouble(),
           etaSeconds: (data['etaSeconds'] as num?)?.toInt(),
+          driverUpdatedAt: DateTime.now(),
         );
       case 'ride:searching':
       case 'ride:driver_assigned':

@@ -11,13 +11,15 @@ import '../../../state/providers.dart';
 import '../driver_controller.dart';
 import '../earnings/earnings_controller.dart';
 
-class DriverDashboardScreen extends ConsumerStatefulWidget {
-  const DriverDashboardScreen({super.key});
+/// Home tab of the driver shell: live map + online/offline control, today's
+/// snapshot, and the "resume active trip" / "finish setup" cards.
+class DriverHomeTab extends ConsumerStatefulWidget {
+  const DriverHomeTab({super.key});
   @override
-  ConsumerState<DriverDashboardScreen> createState() => _State();
+  ConsumerState<DriverHomeTab> createState() => _DriverHomeTabState();
 }
 
-class _State extends ConsumerState<DriverDashboardScreen> {
+class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
   final _mapKey = GlobalKey<MapViewState>();
   LatLng _center = const LatLng(12.9716, 77.5946);
 
@@ -36,22 +38,11 @@ class _State extends ConsumerState<DriverDashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // route to an incoming offer / active ride
-    ref.listen(driverControllerProvider, (prev, next) {
-      if (next.offer != null && prev?.offer == null) {
-        context.push('/d/offer/${next.offer!.rideId}');
-      }
-      if (next.ride != null && next.ride!.status.isActive && prev?.ride?.id != next.ride!.id) {
-        context.push('/d/ride/${next.ride!.id}');
-      }
-    });
-
     final state = ref.watch(driverControllerProvider);
     final profileAsync = ref.watch(driverProfileProvider);
     final earnings = ref.watch(todayEarningsProvider);
 
     return Scaffold(
-      drawer: const _DriverDrawer(),
       body: Stack(
         children: [
           MapView(key: _mapKey, initial: _center, myLocationEnabled: true),
@@ -60,19 +51,17 @@ class _State extends ConsumerState<DriverDashboardScreen> {
               padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
-                  Builder(
-                    builder: (ctx) => _Round(
-                      icon: Icons.menu_rounded,
-                      onTap: () => Scaffold.of(ctx).openDrawer(),
-                    ),
-                  ),
-                  const Spacer(),
                   earnings.maybeWhen(
-                    data: (s) => Chip(
-                      avatar: const Icon(Icons.account_balance_wallet_rounded, size: 16),
-                      label: Text('Today ${money(s.net)}'),
+                    data: (s) => _Pill(
+                      icon: Icons.account_balance_wallet_rounded,
+                      text: 'Today ${money(s.net)}',
                     ),
                     orElse: () => const SizedBox.shrink(),
+                  ),
+                  const Spacer(),
+                  _RoundBtn(
+                    icon: Icons.notifications_none_rounded,
+                    onTap: () => context.push('/d/notifications'),
                   ),
                 ],
               ),
@@ -88,7 +77,8 @@ class _State extends ConsumerState<DriverDashboardScreen> {
                   error: (_, __) => const SizedBox.shrink(),
                   data: (p) {
                     if (p == null) return const SizedBox.shrink();
-                    final blocked = !p.kycApproved || p.vehicles.every((v) => !v.isActive);
+                    final blocked = !p.kycApproved ||
+                        p.vehicles.every((v) => !v.isActive);
                     if (blocked) {
                       return _SetupCard(
                         reason: !p.kycApproved
@@ -99,9 +89,18 @@ class _State extends ConsumerState<DriverDashboardScreen> {
                       );
                     }
                     if (state.ride != null && state.ride!.status.isActive) {
-                      return _ResumeCard(rideId: state.ride!.id, label: state.ride!.status.label);
+                      return _ResumeCard(
+                        rideId: state.ride!.id,
+                        label: state.ride!.status.label,
+                      );
                     }
-                    return _OnlineCard(state: state);
+                    return _OnlineCard(
+                      state: state,
+                      trips: earnings.maybeWhen(
+                          data: (s) => s.trips, orElse: () => null),
+                      earned: earnings.maybeWhen(
+                          data: (s) => s.net, orElse: () => null),
+                    );
                   },
                 ),
               ),
@@ -114,8 +113,10 @@ class _State extends ConsumerState<DriverDashboardScreen> {
 }
 
 class _OnlineCard extends ConsumerWidget {
-  const _OnlineCard({required this.state});
+  const _OnlineCard({required this.state, this.trips, this.earned});
   final DriverState state;
+  final int? trips;
+  final double? earned;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -124,11 +125,14 @@ class _OnlineCard extends ConsumerWidget {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Row(
               children: [
                 Icon(
-                  online ? Icons.wifi_tethering_rounded : Icons.wifi_tethering_off_rounded,
+                  online
+                      ? Icons.wifi_tethering_rounded
+                      : Icons.wifi_tethering_off_rounded,
                   color: online ? AppColors.success : AppColors.inkSoft,
                 ),
                 const SizedBox(width: 10),
@@ -136,11 +140,14 @@ class _OnlineCard extends ConsumerWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(online ? 'You\'re online' : 'You\'re offline',
+                      Text(online ? "You're online" : "You're offline",
                           style: Theme.of(context).textTheme.titleMedium),
                       Text(
-                        online ? 'Waiting for ride requests…' : 'Go online to receive rides',
-                        style: const TextStyle(color: AppColors.inkSoft, fontSize: 12),
+                        online
+                            ? 'Waiting for ride requests…'
+                            : 'Go online to receive rides',
+                        style: const TextStyle(
+                            color: AppColors.inkSoft, fontSize: 12),
                       ),
                     ],
                   ),
@@ -151,18 +158,66 @@ class _OnlineCard extends ConsumerWidget {
                       ? null
                       : (v) async {
                           final err = v
-                              ? await ref.read(driverControllerProvider.notifier).goOnline()
-                              : await ref.read(driverControllerProvider.notifier).goOffline();
-                          if (err != null && context.mounted) showError(context, err);
+                              ? await ref
+                                  .read(driverControllerProvider.notifier)
+                                  .goOnline()
+                              : await ref
+                                  .read(driverControllerProvider.notifier)
+                                  .goOffline();
+                          if (err != null && context.mounted) {
+                            showError(context, err);
+                          }
                         },
                 ),
               ],
             ),
+            if (online) ...[
+              const Divider(height: 24),
+              Row(
+                children: [
+                  _MiniStat(label: 'Trips today', value: '${trips ?? 0}'),
+                  const _MiniDivider(),
+                  _MiniStat(label: 'Earned today', value: money(earned ?? 0)),
+                ],
+              ),
+            ],
           ],
         ),
       ),
     );
   }
+}
+
+class _MiniStat extends StatelessWidget {
+  const _MiniStat({required this.label, required this.value});
+  final String label;
+  final String value;
+  @override
+  Widget build(BuildContext context) => Expanded(
+        child: Column(
+          children: [
+            Text(value,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 2),
+            Text(label,
+                style:
+                    const TextStyle(color: AppColors.inkSoft, fontSize: 11.5)),
+          ],
+        ),
+      );
+}
+
+class _MiniDivider extends StatelessWidget {
+  const _MiniDivider();
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 1,
+        height: 34,
+        color: AppColors.cardBorder,
+      );
 }
 
 class _ResumeCard extends StatelessWidget {
@@ -185,11 +240,15 @@ class _ResumeCard extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text('Active trip',
-                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                    Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                        style: TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.w700)),
+                    Text(label,
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12)),
                   ],
                 ),
               ),
@@ -212,6 +271,7 @@ class _SetupCard extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             const Icon(Icons.assignment_rounded, size: 36, color: AppColors.info),
             const SizedBox(height: 8),
@@ -228,8 +288,35 @@ class _SetupCard extends StatelessWidget {
   }
 }
 
-class _Round extends StatelessWidget {
-  const _Round({required this.icon, required this.onTap});
+class _Pill extends StatelessWidget {
+  const _Pill({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).cardColor,
+          borderRadius: BorderRadius.circular(22),
+          boxShadow: const [
+            BoxShadow(color: AppColors.cardShadow, blurRadius: 8),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: AppColors.secondary),
+            const SizedBox(width: 6),
+            Text(text,
+                style: const TextStyle(
+                    fontWeight: FontWeight.w700, fontSize: 12.5)),
+          ],
+        ),
+      );
+}
+
+class _RoundBtn extends StatelessWidget {
+  const _RoundBtn({required this.icon, required this.onTap});
   final IconData icon;
   final VoidCallback onTap;
 
@@ -246,83 +333,4 @@ class _Round extends StatelessWidget {
       ),
     );
   }
-}
-
-class _DriverDrawer extends ConsumerWidget {
-  const _DriverDrawer();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final auth = ref.watch(authControllerProvider);
-    return Drawer(
-      child: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            color: AppColors.primary,
-            padding: const EdgeInsets.fromLTRB(20, 56, 20, 22),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const CircleAvatar(
-                  radius: 28,
-                  backgroundColor: Colors.white24,
-                  child: Icon(Icons.person, color: Colors.white, size: 30),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  auth.name?.isNotEmpty == true ? auth.name! : 'Driver',
-                  style: const TextStyle(
-                      color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
-                ),
-                Text('+91 ${auth.mobile ?? ''}',
-                    style: const TextStyle(color: Colors.white70, fontSize: 13)),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          _item(context, Icons.account_balance_wallet_rounded, 'Earnings', '/d/earnings',
-              color: AppColors.secondary),
-          _item(context, Icons.savings_rounded, 'Wallet & payouts', '/d/wallet'),
-          _item(context, Icons.history_rounded, 'Trip history', '/d/history'),
-          _item(context, Icons.notifications_rounded, 'Notifications', '/d/notifications'),
-          _item(context, Icons.person_rounded, 'Profile & vehicle', '/d/profile'),
-          const Spacer(),
-          const Divider(height: 1),
-          AppTile(
-            icon: Icons.swap_horiz_rounded,
-            title: 'Switch to Ride',
-            iconColor: AppColors.info,
-            onTap: () async {
-              await ref.read(authControllerProvider.notifier).logout();
-              if (context.mounted) context.go('/role');
-            },
-          ),
-          AppTile(
-            icon: Icons.logout_rounded,
-            title: 'Log out',
-            iconColor: AppColors.error,
-            onTap: () async {
-              await ref.read(authControllerProvider.notifier).logout();
-              if (context.mounted) context.go('/role');
-            },
-          ),
-          const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-
-  Widget _item(BuildContext context, IconData icon, String label, String route,
-          {Color color = AppColors.primary}) =>
-      AppTile(
-        icon: icon,
-        title: label,
-        iconColor: color,
-        onTap: () {
-          final router = GoRouter.of(context);
-          Navigator.pop(context);
-          router.push(route);
-        },
-      );
 }

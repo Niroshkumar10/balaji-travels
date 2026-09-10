@@ -33,8 +33,8 @@ const int = (def) =>
 const schema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    PORT: int(4000),
-    API_BASE_URL: z.string().url().default('http://localhost:4000'),
+    PORT: int(3008),
+    API_BASE_URL: z.string().url().default('https://microlab.neuralarc.com'),
 
     // 'mysql' — real MySQL/MariaDB pool (production + normal dev).
     // 'memory' — in-process store, NO database. Dev/demo/tests only: lets the
@@ -77,7 +77,10 @@ const schema = z
     DISPATCH_OFFER_TIMEOUT_MS: int(25000),
     DISPATCH_MAX_DRIVERS: int(8),
     DISPATCH_NO_DRIVER_TIMEOUT_MS: int(120000),
-    DRIVER_OFFLINE_SWEEP_SECONDS: int(90),
+    DRIVER_OFFLINE_SWEEP_SECONDS: int(120),
+    // A driver's last GPS ping older than this is treated as "not there" by
+    // dispatch. Must be comfortably larger than the app's heartbeat interval.
+    DRIVER_LOCATION_STALE_SECONDS: int(120),
 
     // Platform commission on each completed ride's fare (percent).
     COMMISSION_PCT: int(20).pipe(z.number().int().min(0).max(90)),

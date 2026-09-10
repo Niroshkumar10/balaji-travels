@@ -14,19 +14,20 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
     <application
-        android:label="RedTaxi"
+        android:label="Sri Balaji Travels"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
+        <!-- usesCleartextTraffic is for talking to a local http://<lan-ip>:4000
+             backend during development. For a public release, remove it (or
+             scope it to your API domain via a network-security-config) and
+             serve the API over HTTPS. -->
 
-        <!-- Google Maps SDK key. Supplied at build time so it is not committed:
-               flutter run --dart-define=... (Dart side) is separate; the native
-               SDK reads this manifest value. Set MAPS_API_KEY in
-               android/local.properties or via -PMAPS_API_KEY=... and wire it in
-               app/build.gradle (manifestPlaceholders). Restrict the key by
-               package name + SHA-1 in the Google Cloud console. -->
+        <!-- Google Maps SDK key. Restrict it by package name + SHA-1 in the
+             Google Cloud console before any public release. -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="${MAPS_API_KEY}"/>
+            android:value="AIzaSyBIGPfna9mxSXpAJOhp0xigKhyZeeU0L0I"/>
 
         <activity
             android:name=".MainActivity"

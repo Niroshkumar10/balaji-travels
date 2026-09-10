@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import '../../../core/location/location_providers.dart';
 import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/common_widgets.dart';
@@ -19,30 +20,22 @@ class CustomerHomeScreen extends ConsumerStatefulWidget {
 class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
   final _mapKey = GlobalKey<MapViewState>();
   LatLng _center = const LatLng(12.9716, 77.5946); // Bengaluru default
-  bool _locating = true;
+  bool _hasFix = false;
+  bool _follow = true;
+  DateTime _lastProgrammaticMove = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _locate();
       ref.read(rideSessionProvider.notifier).loadActive();
     });
   }
 
-  Future<void> _locate() async {
-    final perm = await ref.read(locationServiceProvider).ensurePermission();
-    if (!perm.granted) {
-      if (mounted) setState(() => _locating = false);
-      return;
-    }
-    final pos = await ref.read(locationServiceProvider).current();
-    if (!mounted) return;
-    setState(() {
-      _locating = false;
-      if (pos != null) _center = LatLng(pos.latitude, pos.longitude);
-    });
-    _mapKey.currentState?.moveTo(_center);
+  void _recenter() {
+    _follow = true;
+    _lastProgrammaticMove = DateTime.now();
+    _mapKey.currentState?.moveTo(_center, zoom: 16);
   }
 
   @override
@@ -50,6 +43,19 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
     final session = ref.watch(rideSessionProvider);
     final activeRide = session.ride;
     final name = ref.watch(authControllerProvider).name ?? 'there';
+
+    // Live GPS — recentre the camera as the rider moves (until they pan away).
+    ref.listen(positionStreamProvider, (prev, next) {
+      final p = next.valueOrNull;
+      if (p == null || !mounted) return;
+      _center = LatLng(p.latitude, p.longitude);
+      final firstFix = !_hasFix;
+      if (firstFix) setState(() => _hasFix = true);
+      if (_follow || firstFix) {
+        _lastProgrammaticMove = DateTime.now();
+        _mapKey.currentState?.moveTo(_center, zoom: 16);
+      }
+    });
 
     return Scaffold(
       drawer: const _CustomerDrawer(),
@@ -59,8 +65,13 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
             key: _mapKey,
             initial: _center,
             myLocationEnabled: true,
-            markers: {
-              Marker(markerId: const MarkerId('me'), position: _center),
+            onCameraMoveStarted: () {
+              if (DateTime.now()
+                      .difference(_lastProgrammaticMove)
+                      .inMilliseconds >
+                  700) {
+                _follow = false;
+              }
             },
           ),
           SafeArea(
@@ -77,8 +88,8 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
                   const Spacer(),
                   _RoundBtn(
                     icon: Icons.my_location_rounded,
-                    onTap: _locate,
-                    busy: _locating,
+                    onTap: _recenter,
+                    busy: !_hasFix,
                   ),
                 ],
               ),
