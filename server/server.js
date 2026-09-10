@@ -4,7 +4,6 @@ const http = require('http');
 const env = require('./src/config/env');
 const logger = require('./src/infra/logger');
 const db = require('./src/infra/db');
-const redis = require('./src/infra/redis');
 const createApp = require('./src/app');
 const { initSockets } = require('./src/sockets');
 const { startJobs, stopJobs } = require('./src/jobs');
@@ -36,7 +35,7 @@ async function start() {
     logger.info({ signal }, 'shutting down');
     stopJobs();
     server.close();
-    await Promise.allSettled([db.close(), redis.close()]);
+    await Promise.allSettled([db.close()]);
     process.exit(0);
   };
   process.on('SIGINT', () => shutdown('SIGINT'));

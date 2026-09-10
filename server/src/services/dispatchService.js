@@ -22,7 +22,7 @@
 const crypto = require('crypto');
 const env = require('../config/env');
 const logger = require('../infra/logger');
-const redis = require('../infra/redis');
+const lock = require('../infra/lock');
 const db = require('../infra/db');
 const realtime = require('../realtime/emitter');
 const geo = require('./geoService');
@@ -231,7 +231,7 @@ async function handleOfferResponse(rideId, driverId, accept) {
     return { ok: true, reason: 'declined' };
   }
 
-  const release = await redis.lock(`ride:${rideId}`, 4000);
+  const release = await lock.acquire(`ride:${rideId}`, 4000);
   if (!release) return { ok: false, reason: 'taken' };
 
   try {

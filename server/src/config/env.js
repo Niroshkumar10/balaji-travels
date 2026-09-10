@@ -33,7 +33,7 @@ const int = (def) =>
 const schema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    PORT: int(3008),
+    PORT: int(30008),
     API_BASE_URL: z.string().url().default('https://microlab.neuralarc.com'),
 
     // 'mysql' — real MySQL/MariaDB pool (production + normal dev).
@@ -46,8 +46,6 @@ const schema = z
     DB_PASSWORD: z.string().default(''),
     DB_NAME: z.string().optional().default(''),
     DB_POOL_SIZE: int(20).pipe(z.number().int().min(2).max(200)),
-
-    REDIS_URL: z.string().optional().transform((v) => (v && v.trim() ? v.trim() : null)),
 
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
     JWT_ACCESS_TTL: z.string().default('30d'),

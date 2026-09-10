@@ -3,32 +3,40 @@
 /**
  * Firebase Cloud Messaging (push).
  *
- * Initialised from a service-account JSON whose path is given by
- * FIREBASE_SERVICE_ACCOUNT_PATH — the file lives OUTSIDE the repo and is never
- * committed. If the path is unset or the file can't be read, push is silently
- * disabled so local dev and CI don't need Firebase credentials. `messaging`
- * is null in that case and `sendPush()` is a no-op that returns false.
+ * Credentials come from a service-account JSON. Resolution order:
+ *   1. FIREBASE_SERVICE_ACCOUNT_PATH  (explicit path, any deploy layout)
+ *   2. server/firebase-service-account.json  (drop-in convention, like Microlab)
+ *
+ * The file is git-ignored and never committed. If neither is present, push is
+ * disabled: `messaging` is null and `sendPush()` is a no-op returning false, so
+ * dev / CI need no Firebase credentials.
  */
 
 const fs = require('fs');
+const path = require('path');
 const admin = require('firebase-admin');
 const env = require('../config/env');
 const logger = require('./logger');
 
+const DEFAULT_PATH = path.join(__dirname, '..', '..', 'firebase-service-account.json');
+const accountPath = env.FIREBASE_SERVICE_ACCOUNT_PATH || DEFAULT_PATH;
+
 let messaging = null;
 
-if (env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+if (fs.existsSync(accountPath)) {
   try {
-    const raw = fs.readFileSync(env.FIREBASE_SERVICE_ACCOUNT_PATH, 'utf8');
-    const serviceAccount = JSON.parse(raw);
+    const serviceAccount = JSON.parse(fs.readFileSync(accountPath, 'utf8'));
     admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     messaging = admin.messaging();
-    logger.info('firebase messaging initialised');
+    logger.info({ accountPath }, 'firebase messaging initialised');
   } catch (err) {
-    logger.error({ err }, 'firebase init failed — push disabled');
+    logger.error({ err, accountPath }, 'firebase init failed — push disabled');
   }
 } else {
-  logger.warn('FIREBASE_SERVICE_ACCOUNT_PATH not set — push disabled');
+  logger.info(
+    { tried: accountPath },
+    'no firebase service account — push disabled (drop firebase-service-account.json in server/ to enable)',
+  );
 }
 
 /**

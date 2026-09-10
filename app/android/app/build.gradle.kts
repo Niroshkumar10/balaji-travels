@@ -5,10 +5,13 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// FCM / Firebase: add `id("com.google.gms.google-services") version "4.4.2"
-// apply false` to android/settings.gradle.kts, then `id("com.google.gms
-// .google-services")` here, and drop google-services.json into android/app/.
-// Until then PushService no-ops and the app builds without Firebase.
+// FCM / Firebase push: drop your Firebase project's google-services.json into
+// android/app/ and the google-services plugin below activates automatically —
+// firebase_messaging then produces a device token and PushService wires it to
+// the backend. Without the file the app builds and runs normally (push off).
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
 
 android {
     namespace = "com.redtaxi.redtaxi"
