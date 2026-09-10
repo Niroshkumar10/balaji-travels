@@ -1,0 +1,1 @@
+# keeps the logs/ folder in git; the .log files themselves are git-ignored

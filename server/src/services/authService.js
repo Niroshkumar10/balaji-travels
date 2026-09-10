@@ -37,6 +37,17 @@ const authService = {
       throw ApiError.badRequest('role must be customer or driver', 'BAD_ROLE');
     }
 
+    // Resend cooldown — enforced server-side, not just in the UI countdown.
+    const sinceLast = await otpRepo.secondsSinceLast(mobile, role);
+    const cooldown = env.OTP_RESEND_COOLDOWN_SECONDS;
+    if (sinceLast != null && sinceLast < cooldown) {
+      const wait = cooldown - sinceLast;
+      throw ApiError.tooMany(
+        `Please wait ${wait}s before requesting another code`,
+        'OTP_COOLDOWN',
+      );
+    }
+
     const code = otpUtil.generateCode();
     const codeHash = otpUtil.hashCode(code, mobile, role);
     const expiresAt = new Date(Date.now() + env.OTP_TTL_SECONDS * 1000);
@@ -49,12 +60,13 @@ const authService = {
     const delivery = await smsService.sendOtp(mobile, code);
     logger.info({ mobile, role, ttl: env.OTP_TTL_SECONDS, provider: delivery.provider }, 'otp issued');
 
-    // In non-production the code is returned so the mobile apps / tests can
-    // proceed without a real SMS gateway. NEVER in production.
+    // The code is returned to the client outside production, OR when
+    // OTP_EXPOSE_CODE is explicitly set (testing without a real SMS gateway).
+    const expose = !env.isProd || env.OTP_EXPOSE_CODE;
     return {
       sent: true,
       expiresInSeconds: env.OTP_TTL_SECONDS,
-      ...(env.isProd ? {} : { devCode: code }),
+      ...(expose ? { devCode: code } : {}),
     };
   },
 
@@ -86,7 +98,7 @@ const authService = {
         const expectedHash = otpUtil.hashCode(code, mobile, role);
         if (!otpUtil.timingSafeEqualHex(row.code_hash, expectedHash)) {
           await otpRepo.incrementAttempts(row.id, tx);
-          throw ApiError.badRequest('Incorrect code', 'OTP_INVALID');
+          throw ApiError.badRequest('Invalid OTP', 'OTP_INVALID');
         }
 
         const consumed = await otpRepo.consume(row.id, tx);

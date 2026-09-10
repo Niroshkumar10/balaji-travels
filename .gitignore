@@ -14,8 +14,9 @@ node_modules/
 *.jks
 key.properties
 
-# logs
-logs/
+# logs — keep the folder, ignore its contents
+logs/*
+!logs/.gitkeep
 *.log
 npm-debug.log*
 

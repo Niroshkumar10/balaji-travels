@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// 4-box OTP entry. Emits the full string via [onCompleted] and every change
-/// via [onChanged].
+/// N-box OTP entry (default 6). Emits the full string via [onCompleted] and
+/// every change via [onChanged]. Boxes flex to fit any width.
 class OtpInput extends StatefulWidget {
   const OtpInput({
     super.key,
-    this.length = 4,
+    this.length = 6,
     this.onChanged,
     this.onCompleted,
     this.autofocus = true,
@@ -18,12 +18,24 @@ class OtpInput extends StatefulWidget {
   final bool autofocus;
 
   @override
-  State<OtpInput> createState() => _OtpInputState();
+  State<OtpInput> createState() => OtpInputState();
 }
 
-class _OtpInputState extends State<OtpInput> {
+class OtpInputState extends State<OtpInput> {
   late final List<TextEditingController> _c;
   late final List<FocusNode> _f;
+
+  /// Programmatically fill the boxes (e.g. the dev "Use code" shortcut).
+  void setCode(String code) {
+    final digits = code.replaceAll(RegExp(r'\D'), '');
+    for (var k = 0; k < widget.length; k++) {
+      _c[k].text = k < digits.length ? digits[k] : '';
+    }
+    FocusScope.of(context).unfocus();
+    widget.onChanged?.call(_value);
+    if (_value.length == widget.length) widget.onCompleted?.call(_value);
+    setState(() {});
+  }
 
   @override
   void initState() {
@@ -66,21 +78,28 @@ class _OtpInputState extends State<OtpInput> {
   @override
   Widget build(BuildContext context) {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: List.generate(widget.length, (i) {
-        return SizedBox(
-          width: 58,
-          child: TextField(
-            controller: _c[i],
-            focusNode: _f[i],
-            autofocus: widget.autofocus && i == 0,
-            textAlign: TextAlign.center,
-            keyboardType: TextInputType.number,
-            maxLength: 1,
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
-            decoration: const InputDecoration(counterText: ''),
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            onChanged: (v) => _onChanged(i, v),
+        return Expanded(
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: i == 0 ? 0 : 4,
+              right: i == widget.length - 1 ? 0 : 4,
+            ),
+            child: TextField(
+              controller: _c[i],
+              focusNode: _f[i],
+              autofocus: widget.autofocus && i == 0,
+              textAlign: TextAlign.center,
+              keyboardType: TextInputType.number,
+              maxLength: 1,
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+              decoration: const InputDecoration(
+                counterText: '',
+                contentPadding: EdgeInsets.symmetric(vertical: 14),
+              ),
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              onChanged: (v) => _onChanged(i, v),
+            ),
           ),
         );
       }),

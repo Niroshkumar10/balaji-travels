@@ -19,6 +19,12 @@ process.on('uncaughtException', (err) => {
 });
 
 async function start() {
+  if (env.isProd && env.OTP_EXPOSE_CODE) {
+    logger.warn(
+      'OTP_EXPOSE_CODE=true in production — OTP codes are returned in API responses. Testing only; turn this off once SMS works.',
+    );
+  }
+
   await db.ping();
   logger.info('database reachable');
 

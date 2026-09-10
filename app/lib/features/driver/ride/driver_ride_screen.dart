@@ -237,7 +237,7 @@ class _Panel extends StatelessWidget {
           children: [
             _header(context, 'Ask the customer for the OTP'),
             const SizedBox(height: 14),
-            OtpInput(onChanged: onOtpChanged),
+            OtpInput(length: 4, onChanged: onOtpChanged),
             const SizedBox(height: 16),
             PrimaryButton(
               label: 'Start trip',

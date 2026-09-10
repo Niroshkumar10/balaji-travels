@@ -10,7 +10,7 @@
  */
 
 const db = require('../infra/db');
-const logger = require('../infra/logger');
+const L = require('../infra/logger').for('presence'); // → logs/presence.log
 const ApiError = require('../utils/apiError');
 const driverRepo = require('../repositories/driverRepo');
 const vehicleRepo = require('../repositories/vehicleRepo');
@@ -37,7 +37,7 @@ const presenceService = {
       await driverRepo.setPresence(driverId, { isOnline: true, availability: 'available' }, tx);
       await driverLocationRepo.upsert(driverId, { lat, lng }, tx);
     });
-    logger.info({ driverId, lat, lng }, 'presence.online');
+    L.event('🟢', 'driver went ONLINE', { driverId, lat, lng });
     return { availability: 'available' };
   },
 
@@ -47,7 +47,7 @@ const presenceService = {
       throw ApiError.conflict('Finish or cancel your active ride before going offline', 'HAS_ACTIVE_RIDE');
     }
     await driverRepo.setPresence(driverId, { isOnline: false, availability: 'offline' });
-    logger.info({ driverId }, 'presence.offline');
+    L.event('🔴', 'driver went OFFLINE', { driverId });
     return { availability: 'offline' };
   },
 
@@ -55,7 +55,7 @@ const presenceService = {
   async heartbeat(driverId, { lat, lng, bearing, speedKmph, battery }) {
     await driverLocationRepo.upsert(driverId, { lat, lng, bearing, speedKmph, battery });
     await driverRepo.touchLastSeen(driverId);
-    logger.debug({ driverId, lat, lng }, 'presence.heartbeat');
+    L.debug({ driverId, lat, lng }, 'heartbeat');
   },
 };
 

@@ -21,6 +21,16 @@ const sqlImpl = {
     );
     return res.insertId;
   },
+  /** Seconds since the most recent OTP was issued for (mobile, role), or null. */
+  async secondsSinceLast(mobile, role, ctx = db) {
+    const row = await ctx.queryOne(
+      `SELECT TIMESTAMPDIFF(SECOND, created_at, NOW()) AS age
+         FROM rt_otps WHERE mobile = :mobile AND role = :role
+        ORDER BY id DESC LIMIT 1`,
+      { mobile, role },
+    );
+    return row ? Number(row.age) : null;
+  },
   /** Latest unconsumed challenge, row-locked for the verify transaction. */
   findLatestActive(mobile, role, ctx = db) {
     return ctx.queryOne(
@@ -59,7 +69,15 @@ const memImpl = {
       expires_at: fmt(expiresAt),
       attempts: 0,
       consumed_at: null,
+      created_at: new Date().toISOString(),
     }).id;
+  },
+  async secondsSinceLast(mobile, role) {
+    const rows = store
+      .filter('otps', (x) => x.mobile === mobile && x.role === role)
+      .sort((a, b) => b.id - a.id);
+    if (!rows[0]?.created_at) return null;
+    return Math.floor((Date.now() - new Date(rows[0].created_at).getTime()) / 1000);
   },
   async findLatestActive(mobile, role) {
     const rows = store
