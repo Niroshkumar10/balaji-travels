@@ -9,7 +9,9 @@
  *     within the search radius whose vehicle category matches the request
  *   • offer to ONE driver at a time; each offer has a hard timeout
  *   • active reject or timeout → next driver
- *   • queue exhausted → re-query for newly-online drivers; still none → NO_DRIVERS_FOUND
+ *   • nearby queue exhausted → re-query WIDER (DISPATCH_EXPAND_RADIUS_KM;
+ *     0 = no distance limit, i.e. any online driver of the right category);
+ *     still none → NO_DRIVERS_FOUND
  *   • acceptance is resolved by rideRepo.atomicAssign — a conditional UPDATE
  *     that exactly one concurrent caller can win; a short Redis lock just makes
  *     the losing side cheap. No in-memory Set is load-bearing.
@@ -22,7 +24,8 @@
 const crypto = require('crypto');
 const env = require('../config/env');
 const logger = require('../infra/logger');
-const redis = require('../infra/redis');
+const L = logger.for('dispatch'); // → logs/dispatch.log
+const lock = require('../infra/lock');
 const db = require('../infra/db');
 const realtime = require('../realtime/emitter');
 const geo = require('./geoService');
@@ -38,7 +41,11 @@ const userRepo = require('../repositories/userRepo');
 const OFFER_TIMEOUT_MS = env.DISPATCH_OFFER_TIMEOUT_MS;
 const NO_DRIVER_TIMEOUT_MS = env.DISPATCH_NO_DRIVER_TIMEOUT_MS;
 const RADIUS_KM = env.DISPATCH_SEARCH_RADIUS_KM;
+// Radius for the re-query once the nearby queue is exhausted. 0 = no limit.
+const EXPAND_RADIUS_KM = env.DISPATCH_EXPAND_RADIUS_KM;
 const MAX_DRIVERS = env.DISPATCH_MAX_DRIVERS;
+
+const radiusLabel = (r) => (r > 0 ? `${r} km` : 'no distance limit');
 
 /** rideId -> dispatch state */
 const state = new Map();
@@ -52,11 +59,26 @@ function clearTimers(s) {
   s.globalTimer = null;
 }
 
-async function buildQueue(ride, excludeIds = new Set()) {
+const km = (m) => (m == null ? 'no GPS' : `${(m / 1000).toFixed(1)} km`);
+
+/** Compact, self-contained view of the offer queue for a log block. */
+function queueSnapshot(s) {
+  const remaining = Math.max(0, s.queue.length - s.idx);
+  const lines = [
+    `Queue : ${s.queue.length} total  |  tried ${s.idx}  |  remaining ${remaining}`,
+  ];
+  s.queue.forEach((c, i) => {
+    const mark = i < s.idx ? '✓' : i === s.idx ? '▶' : '○';
+    lines.push(`  ${mark} ${i + 1}. driver ${c.driverId}   ${km(c.distanceM)} from pickup`);
+  });
+  return lines;
+}
+
+async function buildQueue(ride, excludeIds = new Set(), radiusKm = RADIUS_KM) {
   const rows = await driverLocationRepo.nearby({
     lat: Number(ride.pickup_lat),
     lng: Number(ride.pickup_lng),
-    radiusKm: RADIUS_KM,
+    radiusKm,
     categories: [ride.vehicle_category],
     limit: MAX_DRIVERS * 2,
   });
@@ -70,46 +92,50 @@ async function buildQueue(ride, excludeIds = new Set()) {
       lat: Number(r.lat),
       lng: Number(r.lng),
     }));
-  logger.info(
-    {
-      rideId: ride.id,
-      pickup: { lat: Number(ride.pickup_lat), lng: Number(ride.pickup_lng) },
-      radiusKm: RADIUS_KM,
-      category: ride.vehicle_category,
-      nearbyRows: rows.length,
-      queued: queue.length,
-      driverIds: queue.map((c) => c.driverId),
-    },
-    'dispatch.buildQueue',
-  );
+  L.block('🔍', `Ride #${ride.id} — driver search`, [
+    `Pickup    : ${Number(ride.pickup_lat).toFixed(5)}, ${Number(ride.pickup_lng).toFixed(5)}`,
+    `Category  : ${ride.vehicle_category}    Radius : ${radiusLabel(radiusKm)}`,
+    `Found     : ${rows.length} matching  →  queued ${queue.length}`,
+    ...queue.map((c, i) => `  ${i + 1}. driver ${c.driverId}   ${km(c.distanceM)} from pickup`),
+  ]);
   return queue;
 }
 
 /** Run the staged diagnostic and log which filter eliminated every driver. */
-async function logWhyNoDrivers(ride) {
+async function logWhyNoDrivers(ride, radiusKm = RADIUS_KM) {
   try {
     const d = await driverLocationRepo.diagnose({
       lat: Number(ride.pickup_lat),
       lng: Number(ride.pickup_lng),
-      radiusKm: RADIUS_KM,
+      radiusKm,
       category: ride.vehicle_category,
     });
-    logger.warn({ rideId: ride.id, diagnostic: d }, 'dispatch.no_candidates — see which count drops to 0');
+    const distLine =
+      d.radiusKm == null
+        ? `  (no distance limit) ....... ${d.insideRadiusBox}`
+        : `  within ${d.radiusKm} km of pickup ..... ${d.insideRadiusBox}`;
+    L.block('❌', `Ride #${ride.id} — no candidates (first 0 = the reason)`, [
+      `online .................... ${d.online}`,
+      `  available ............... ${d.available}`,
+      `  KYC approved ............ ${d.kycApproved}`,
+      `  has a GPS row .......... ${d.hasLocationRow}`,
+      `  GPS fresh (< ${d.staleSeconds}s) ...... ${d.freshLocation}`,
+      distLine,
+      `  vehicle = ${d.category} ......... ${d.categoryMatch}`,
+    ]);
   } catch (err) {
-    logger.error({ rideId: ride.id, err: err.message }, 'dispatch.diagnose failed');
+    L.warnEvent('⚠️', 'diagnostic query failed', { rideId: ride.id, err: err.message });
   }
 }
 
 async function start(ride) {
-  logger.info(
-    {
-      rideId: ride.id,
-      pickup: { lat: Number(ride.pickup_lat), lng: Number(ride.pickup_lng) },
-      category: ride.vehicle_category,
-      radiusKm: RADIUS_KM,
-    },
-    'dispatch.start',
-  );
+  L.block('🚕', `Ride #${ride.id} — searching for a driver`, [
+    `Pickup       : ${Number(ride.pickup_lat).toFixed(5)}, ${Number(ride.pickup_lng).toFixed(5)}`,
+    `Drop         : ${Number(ride.drop_lat).toFixed(5)}, ${Number(ride.drop_lng).toFixed(5)}`,
+    `Category     : ${ride.vehicle_category}    Trip : ${km(ride.distance_m)}`,
+    `Search radius: ${RADIUS_KM} km  (then ${radiusLabel(EXPAND_RADIUS_KM)} on re-query)`,
+    `Per-offer    : ${OFFER_TIMEOUT_MS / 1000}s     Give up after : ${NO_DRIVER_TIMEOUT_MS / 1000}s`,
+  ]);
   // REQUESTED → SEARCHING_DRIVER
   const searching = await db.withTransaction((tx) =>
     rideRepo.transition({ rideId: ride.id, event: 'search', actorRole: 'system' }, tx),
@@ -135,7 +161,7 @@ async function start(ride) {
     globalTimer: setTimeout(() => noDrivers(ride.id).catch((e) => logger.error({ e }, 'noDrivers')), NO_DRIVER_TIMEOUT_MS),
   };
   state.set(ride.id, s);
-  logger.info({ rideId: ride.id, candidates: queue.length }, 'dispatch started');
+  L.event('▶️', 'dispatch started', { rideId: ride.id, candidates: queue.length });
   offerNext(ride.id).catch((e) => logger.error({ err: e }, 'offerNext failed'));
 }
 
@@ -144,14 +170,19 @@ async function offerNext(rideId) {
   if (!s) return;
 
   if (s.idx >= s.queue.length) {
-    const fresh = await buildQueue(s.ride, new Set(s.queue.map((c) => c.driverId)));
+    // Nearby list exhausted — widen the net (EXPAND_RADIUS_KM; 0 = no limit).
+    const excl = new Set(s.queue.map((c) => c.driverId));
+    const fresh = await buildQueue(s.ride, excl, EXPAND_RADIUS_KM);
     if (fresh.length === 0) {
-      await logWhyNoDrivers(s.ride);
+      await logWhyNoDrivers(s.ride, EXPAND_RADIUS_KM);
       await noDrivers(rideId);
       return;
     }
     s.queue.push(...fresh);
-    logger.info({ rideId, added: fresh.length }, 'dispatch.queue.expanded');
+    L.event('🔄', `re-queried (${radiusLabel(EXPAND_RADIUS_KM)}) after exhausting nearby`, {
+      rideId,
+      added: fresh.length,
+    });
   }
 
   const cand = s.queue[s.idx];
@@ -159,16 +190,13 @@ async function offerNext(rideId) {
   // Re-check the driver is still dispatchable right before the offer.
   const drv = await driverRepo.findById(cand.driverId);
   if (!drv || drv.is_online !== 1 || drv.availability !== 'available' || drv.kyc_status !== 'approved') {
-    logger.info(
-      {
-        rideId,
-        driverId: cand.driverId,
-        isOnline: drv?.is_online,
-        availability: drv?.availability,
-        kyc: drv?.kyc_status,
-      },
-      'dispatch.offer.skip — driver no longer dispatchable',
-    );
+    L.event('⏭️', 'skipped — driver no longer dispatchable', {
+      rideId,
+      driverId: cand.driverId,
+      isOnline: drv?.is_online,
+      availability: drv?.availability,
+      kyc: drv?.kyc_status,
+    });
     s.idx += 1;
     return offerNext(rideId);
   }
@@ -195,13 +223,18 @@ async function offerNext(rideId) {
     data: { rideId: String(rideId) },
   });
 
-  logger.info(
-    { rideId, driverId: cand.driverId, idx: s.idx, distanceM: cand.distanceM, timeoutMs: OFFER_TIMEOUT_MS },
-    'dispatch.offer.sent',
-  );
+  const next = s.queue[s.idx + 1] ?? null;
+  L.block('📤', `Ride #${rideId} — offer ${s.idx + 1}/${s.queue.length}`, [
+    `▶ Offering : driver ${cand.driverId}   ${km(cand.distanceM)} from pickup`,
+    `  Window   : ${OFFER_TIMEOUT_MS / 1000}s to respond`,
+    `  Channel  : socket + FCM push`,
+    `⬇ Next     : ${next ? `driver ${next.driverId}  ${km(next.distanceM)}` : 'none — will re-query on exhaustion'}`,
+    '',
+    ...queueSnapshot(s),
+  ]);
 
   s.offerTimer = setTimeout(() => {
-    logger.info({ rideId, driverId: cand.driverId }, 'dispatch.offer.timeout');
+    L.event('⏰', 'offer timed out — moving to next', { rideId, driverId: cand.driverId });
     rideOfferRepo.markResponded(rideId, cand.driverId, 'timed_out').catch(() => {});
     realtime.toUser(s.offeredUserIds.get(cand.driverId), 'ride:offer_revoked', { rideId, reason: 'timeout' });
     s.idx += 1;
@@ -213,10 +246,10 @@ async function offerNext(rideId) {
  * @returns {Promise<{ok:boolean, reason?:string, ride?:object}>}
  */
 async function handleOfferResponse(rideId, driverId, accept) {
-  logger.info({ rideId, driverId, accept }, 'dispatch.offer.response');
+  L.event(accept ? '👍' : '👎', `driver ${accept ? 'accepted' : 'rejected'} the offer`, { rideId, driverId });
   const s = state.get(rideId);
   if (!s) {
-    logger.warn({ rideId, driverId }, 'dispatch.offer.response — no active dispatch (expired/taken)');
+    L.warnEvent('⚠️', 'response for a ride with no active dispatch (expired / already taken)', { rideId, driverId });
     return { ok: false, reason: 'expired' };
   }
 
@@ -231,7 +264,7 @@ async function handleOfferResponse(rideId, driverId, accept) {
     return { ok: true, reason: 'declined' };
   }
 
-  const release = await redis.lock(`ride:${rideId}`, 4000);
+  const release = await lock.acquire(`ride:${rideId}`, 4000);
   if (!release) return { ok: false, reason: 'taken' };
 
   try {
@@ -309,7 +342,13 @@ async function handleOfferResponse(rideId, driverId, accept) {
       if (dId !== driverId) realtime.toUser(uId, 'ride:offer_revoked', { rideId, reason: 'taken' });
     }
 
-    logger.info({ rideId, driverId }, 'ride assigned');
+    L.block('✅', `Ride #${rideId} — ASSIGNED to driver ${driverId}`, [
+      `Driver   : ${drvUser?.name ?? 'Driver'} (id ${driverId})`,
+      `Vehicle  : ${vehicle ? `${vehicle.category} ${vehicle.plate_no}` : '—'}`,
+      `ETA      : ${etaSec != null ? `${Math.round(etaSec / 60)} min to pickup` : 'unknown'}`,
+      `OTP      : issued to customer + driver`,
+      `Others   : ${s.offeredUserIds.size - 1} earlier offer(s) revoked`,
+    ]);
     return { ok: true, ride };
   } finally {
     await release();
@@ -338,7 +377,7 @@ async function noDrivers(rideId) {
     body: 'We could not find a driver nearby. Please try again.',
     data: { rideId: String(rideId) },
   });
-  logger.info({ rideId }, 'dispatch → NO_DRIVERS_FOUND');
+  L.event('🛑', 'gave up — NO_DRIVERS_FOUND (customer notified)', { rideId });
 }
 
 /** Called when the customer cancels while still searching. */

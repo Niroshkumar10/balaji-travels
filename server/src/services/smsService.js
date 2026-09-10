@@ -13,7 +13,13 @@ const env = require('../config/env');
 const logger = require('../infra/logger');
 
 async function consoleProvider(mobile, code) {
-  logger.info({ mobile, code }, '[sms:console] OTP (dev only — not actually sent)');
+  // The code is a live credential — print it only outside production, or when
+  // OTP_EXPOSE_CODE is explicitly set for pre-SMS testing.
+  if (env.isProd && !env.OTP_EXPOSE_CODE) {
+    logger.warn({ mobile }, '[sms:console] OTP generated but SMS_PROVIDER=console — code NOT delivered');
+  } else {
+    logger.info({ mobile, code }, '[sms:console] OTP (not actually sent)');
+  }
   return { provider: 'console', ok: true };
 }
 

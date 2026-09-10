@@ -11,8 +11,6 @@
  */
 
 const { Server } = require('socket.io');
-const { createAdapter } = require('@socket.io/redis-adapter');
-const redis = require('../infra/redis');
 const logger = require('../infra/logger');
 const socketAuth = require('./socketAuth');
 const realtime = require('../realtime/emitter');
@@ -161,13 +159,7 @@ function initSockets(httpServer) {
     pingInterval: 20_000,
     pingTimeout: 25_000,
   });
-
-  if (redis.isEnabled) {
-    io.adapter(createAdapter(redis.client, redis.subClient));
-    logger.info('socket.io redis adapter enabled');
-  } else {
-    logger.warn('socket.io running without redis adapter (single instance only)');
-  }
+  // Single-instance deployment — the default in-memory adapter is all we need.
 
   realtime.bind(io);
   io.use(socketAuth);

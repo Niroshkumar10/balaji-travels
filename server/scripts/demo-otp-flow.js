@@ -20,7 +20,6 @@
 // it does not change any auth behaviour and devCode is still returned (non-prod).
 process.env.NODE_ENV = 'test';
 process.env.DB_DRIVER = 'memory';
-process.env.REDIS_URL = '';
 process.env.SMS_PROVIDER = 'console';
 process.env.FIREBASE_SERVICE_ACCOUNT_PATH = '';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'demo-only-secret-key-not-for-real-use-1234567890';

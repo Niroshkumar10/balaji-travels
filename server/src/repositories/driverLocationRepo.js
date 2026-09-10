@@ -34,10 +34,11 @@ const driverLocationRepo = {
   },
 
   /**
-   * Online + available + KYC-approved drivers within `radiusKm` of (lat,lng),
-   * optionally filtered to vehicle categories, nearest first.
-   * Coarse bounding-box filter in SQL (uses idx_driver_loc_box), exact Haversine
-   * sort in JS on the survivors.
+   * Online + available + KYC-approved drivers of the right vehicle category,
+   * nearest first. `radiusKm` limits how far a driver may be from (lat,lng);
+   * pass 0 / null / Infinity for NO distance limit (used by dispatch's
+   * queue-exhaustion re-query — take any online driver, closest first).
+   * Coarse bounding-box in SQL, exact Haversine sort in JS.
    */
   async nearby(
     {
@@ -50,21 +51,28 @@ const driverLocationRepo = {
     },
     ctx = db,
   ) {
-    const box = boundingBox(lat, lng, radiusKm);
+    const limited = Number.isFinite(radiusKm) && radiusKm > 0;
     const catFilter =
       Array.isArray(categories) && categories.length
         ? `AND v.category IN (${categories.map((_, i) => `:cat${i}`).join(',')})`
         : '';
-    const params = {
-      latMin: box.latMin,
-      latMax: box.latMax,
-      lngMin: box.lngMin,
-      lngMax: box.lngMax,
-      staleSeconds,
-    };
+    const params = { staleSeconds };
     (categories ?? []).forEach((c, i) => {
       params[`cat${i}`] = c;
     });
+
+    let boxFilter = '';
+    if (limited) {
+      const box = boundingBox(lat, lng, radiusKm);
+      boxFilter =
+        'AND dl.lat BETWEEN :latMin AND :latMax AND dl.lng BETWEEN :lngMin AND :lngMax';
+      Object.assign(params, {
+        latMin: box.latMin,
+        latMax: box.latMax,
+        lngMin: box.lngMin,
+        lngMax: box.lngMax,
+      });
+    }
 
     const rows = await ctx.query(
       `SELECT d.id AS driver_id, d.rating_avg, d.current_vehicle_id,
@@ -77,8 +85,7 @@ const driverLocationRepo = {
           AND d.availability = 'available'
           AND d.kyc_status = 'approved'
           AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
-          AND dl.lat BETWEEN :latMin AND :latMax
-          AND dl.lng BETWEEN :lngMin AND :lngMax
+          ${boxFilter}
           ${catFilter}`,
       params,
     );
@@ -88,7 +95,7 @@ const driverLocationRepo = {
         ...r,
         distance_m: haversineMeters(lat, lng, Number(r.lat), Number(r.lng)),
       }))
-      .filter((r) => r.distance_m <= radiusKm * 1000)
+      .filter((r) => !limited || r.distance_m <= radiusKm * 1000)
       .sort((a, b) => a.distance_m - b.distance_m)
       .slice(0, limit);
   },
@@ -98,7 +105,10 @@ const driverLocationRepo = {
    * stage so a "no drivers found" can name the exact cause in the logs.
    */
   async diagnose({ lat, lng, radiusKm, category, staleSeconds = env.DRIVER_LOCATION_STALE_SECONDS }, ctx = db) {
-    const box = boundingBox(lat, lng, radiusKm);
+    const limited = Number.isFinite(radiusKm) && radiusKm > 0;
+    const box = limited
+      ? boundingBox(lat, lng, radiusKm)
+      : { latMin: -90, latMax: 90, lngMin: -180, lngMax: 180 };
     const row = await ctx.queryOne(
       `SELECT
          (SELECT COUNT(*) FROM rt_drivers WHERE is_online = 1) AS online,
@@ -142,7 +152,7 @@ const driverLocationRepo = {
       insideRadiusBox: Number(row?.in_box ?? 0),
       categoryMatch: Number(row?.category_match ?? 0),
       staleSeconds,
-      radiusKm,
+      radiusKm: limited ? radiusKm : null, // null → no distance limit
       category,
     };
   },

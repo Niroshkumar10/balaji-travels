@@ -33,8 +33,8 @@ const int = (def) =>
 const schema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    PORT: int(3008),
-    API_BASE_URL: z.string().url().default('https://microlab.neuralarc.com'),
+    PORT: int(30008),
+    API_BASE_URL: z.string().url().default('https://chat.neuralarc.com'),
 
     // 'mysql' — real MySQL/MariaDB pool (production + normal dev).
     // 'memory' — in-process store, NO database. Dev/demo/tests only: lets the
@@ -47,12 +47,17 @@ const schema = z
     DB_NAME: z.string().optional().default(''),
     DB_POOL_SIZE: int(20).pipe(z.number().int().min(2).max(200)),
 
-    REDIS_URL: z.string().optional().transform((v) => (v && v.trim() ? v.trim() : null)),
-
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
     JWT_ACCESS_TTL: z.string().default('30d'),
     OTP_TTL_SECONDS: int(300),
-    OTP_LENGTH: int(4).pipe(z.number().int().min(4).max(8)),
+    OTP_LENGTH: int(6).pipe(z.number().int().min(4).max(8)),
+    // Min seconds between OTP requests for the same (mobile, role) — the
+    // "resend cooldown". The apps also show a countdown, this enforces it.
+    OTP_RESEND_COOLDOWN_SECONDS: int(30),
+    // TESTING ONLY: when true, the OTP is returned in the /auth/otp/request
+    // response (and logged) even in production — for use before a real SMS
+    // gateway is wired. Turn OFF the moment SMS works.
+    OTP_EXPOSE_CODE: bool(false),
     OTP_DEV_BYPASS_CODE: z.string().optional().transform((v) => (v && v.trim() ? v.trim() : null)),
 
     ADMIN_HMAC_SECRET: z.string().min(16),
@@ -74,6 +79,9 @@ const schema = z
     RAZORPAY_WEBHOOK_SECRET: z.string().optional().default(''),
 
     DISPATCH_SEARCH_RADIUS_KM: int(5),
+    // Radius for the queue-exhaustion re-query. 0 = no distance limit
+    // (offer to ANY online driver of the right category, nearest first).
+    DISPATCH_EXPAND_RADIUS_KM: int(0),
     DISPATCH_OFFER_TIMEOUT_MS: int(25000),
     DISPATCH_MAX_DRIVERS: int(8),
     DISPATCH_NO_DRIVER_TIMEOUT_MS: int(120000),

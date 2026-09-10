@@ -60,7 +60,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   style: Theme.of(context).textTheme.headlineSmall),
               const SizedBox(height: 6),
               const Text(
-                'We\'ll send a 4-digit code to verify it.',
+                "We'll send a 6-digit code to verify it.",
                 style: TextStyle(color: AppColors.inkSoft),
               ),
               const SizedBox(height: 28),
