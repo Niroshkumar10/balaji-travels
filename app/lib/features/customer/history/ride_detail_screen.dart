@@ -19,15 +19,26 @@ final _detailProvider =
   return (ride, history);
 });
 
+/// Full trip breakdown — map, fare, and status timeline. Shared by both
+/// roles (a completed ride looks the same from either side); only the app
+/// bar's title/back-fallback differ, so the driver's "Trip details" screen
+/// just points this same widget at `/d/history` instead of duplicating it.
 class RideDetailScreen extends ConsumerWidget {
-  const RideDetailScreen({super.key, required this.rideId});
+  const RideDetailScreen({
+    super.key,
+    required this.rideId,
+    this.title = 'Ride details',
+    this.fallbackRoute = '/c/history',
+  });
   final int rideId;
+  final String title;
+  final String fallbackRoute;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(_detailProvider(rideId));
     return Scaffold(
-      appBar: const RtAppBar(title: 'Ride details', fallbackRoute: '/c/history'),
+      appBar: RtAppBar(title: title, fallbackRoute: fallbackRoute),
       body: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => EmptyState(icon: Icons.error_outline_rounded, title: 'Error', subtitle: '$e'),

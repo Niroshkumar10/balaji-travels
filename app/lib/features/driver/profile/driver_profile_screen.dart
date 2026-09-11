@@ -3,13 +3,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/models/models.dart';
+import '../../../core/store/driver_onboarding_store.dart';
 import '../../../core/theme/app_colors.dart';
-import '../../../core/util/formatters.dart';
 import '../../../core/widgets/common_widgets.dart';
 import '../../../state/providers.dart';
 import '../driver_controller.dart';
+import '../onboarding/payment_details_screen.dart';
+import 'driver_account_detail_screen.dart';
 
+const _languages = ['English', 'தமிழ் (Tamil)', 'తెలుగు (Telugu)', 'ಕನ್ನಡ (Kannada)', 'हिंदी (Hindi)'];
+
+/// The "Account" screen — a menu of everything about the driver, matching
+/// the reference: Personal information / Vehicle / Documents / Bank details
+/// / Language / Notifications / Safety / Help & support, then Log out.
+/// Personal information / Vehicle / Documents open the combined expandable
+/// DriverAccountDetailScreen rather than three separate sheets.
 class DriverProfileScreen extends ConsumerStatefulWidget {
   const DriverProfileScreen({super.key, this.showBack = true});
   final bool showBack;
@@ -18,93 +26,31 @@ class DriverProfileScreen extends ConsumerStatefulWidget {
 }
 
 class _State extends ConsumerState<DriverProfileScreen> {
-  final _name = TextEditingController();
-  final _email = TextEditingController();
-  final _license = TextEditingController();
-  bool _busy = false;
-  bool _hydrated = false;
+  void _openDetail(String section) => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => DriverAccountDetailScreen(initialExpanded: section)),
+      );
 
-  @override
-  void dispose() {
-    for (final c in [_name, _email, _license]) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
-  void _hydrate(DriverProfile p) {
-    if (_hydrated) return;
-    _hydrated = true;
-    _name.text = p.name ?? '';
-    _email.text = p.email ?? '';
-    _license.text = p.licenseNo ?? '';
-  }
-
-  Future<void> _save() async {
-    setState(() => _busy = true);
-    final res = await ref.read(profileRepoProvider).updateDriver({
-      'name': _name.text.trim(),
-      if (_email.text.trim().isNotEmpty) 'email': _email.text.trim(),
-      if (_license.text.trim().isNotEmpty) 'licenseNo': _license.text.trim(),
-    });
+  Future<void> _pickLanguage() async {
+    final current = (await DriverOnboardingStore.get())['language'] as String?;
     if (!mounted) return;
-    setState(() => _busy = false);
-    res.when(
-      ok: (p) {
-        ref.read(authControllerProvider.notifier).refreshName(p.name ?? '');
-        ref.invalidate(driverProfileProvider);
-        showOk(context, 'Profile updated');
-      },
-      err: (e) => showError(context, e.message),
-    );
-  }
-
-  Future<void> _addVehicle() async {
-    final plate = TextEditingController();
-    final make = TextEditingController();
-    var cat = 'hatchback';
-    final ok = await showDialog<bool>(
+    final picked = await showModalBottomSheet<String>(
       context: context,
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          title: const Text('Add vehicle'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DropdownButtonFormField<String>(
-                initialValue: cat,
-                items: VehicleCategoryInfo.all
-                    .map((c) => DropdownMenuItem(value: c.id, child: Text('${c.emoji} ${c.name}')))
-                    .toList(),
-                onChanged: (v) => setLocal(() => cat = v ?? 'hatchback'),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: plate,
-                textCapitalization: TextCapitalization.characters,
-                decoration: const InputDecoration(labelText: 'Number plate'),
-              ),
-              TextField(controller: make, decoration: const InputDecoration(labelText: 'Make/model')),
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Add')),
-          ],
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: _languages
+              .map((l) => ListTile(
+                    title: Text(l),
+                    trailing: l == current ? const Icon(Icons.check_rounded, color: AppColors.primary) : null,
+                    onTap: () => Navigator.pop(context, l),
+                  ))
+              .toList(),
         ),
       ),
     );
-    if (ok != true || plate.text.trim().isEmpty) return;
-    final res = await ref.read(profileRepoProvider).addVehicle({
-      'category': cat,
-      'plateNo': plate.text.trim(),
-      if (make.text.trim().isNotEmpty) 'make': make.text.trim(),
-    });
-    if (!mounted) return;
-    res.when(
-      ok: (_) => ref.invalidate(driverProfileProvider),
-      err: (e) => showError(context, e.message),
-    );
+    if (picked != null) await DriverOnboardingStore.patch({'language': picked});
   }
 
   Future<void> _logout() async {
@@ -117,164 +63,74 @@ class _State extends ConsumerState<DriverProfileScreen> {
     final async = ref.watch(driverProfileProvider);
     final auth = ref.watch(authControllerProvider);
     final p = async.valueOrNull;
-    if (p != null) _hydrate(p);
 
-    final name = (p?.name?.trim().isNotEmpty ?? false)
-        ? p!.name!.trim()
-        : (auth.name?.trim().isNotEmpty ?? false)
-            ? auth.name!.trim()
-            : 'Driver';
+    final name = (p?.name?.trim().isNotEmpty ?? false) ? p!.name!.trim() : (auth.name?.trim().isNotEmpty ?? false) ? auth.name!.trim() : 'Driver';
     final mobile = p?.mobile ?? auth.mobile ?? '';
 
     return Scaffold(
-      appBar: RtAppBar(
-        title: 'Profile',
-        fallbackRoute: '/d/dashboard',
-        showBack: widget.showBack,
-      ),
+      appBar: RtAppBar(title: 'Account', fallbackRoute: '/d/dashboard', showBack: widget.showBack),
       body: RefreshIndicator(
         onRefresh: () async => ref.refresh(driverProfileProvider.future),
-        child: LoadingOverlay(
-          busy: _busy,
-          child: ListView(
-            padding: const EdgeInsets.all(16),
+        child: Builder(
+          builder: (context) => ListView(
+            padding: const EdgeInsets.symmetric(vertical: 16),
             children: [
-              // ── header (always shown, from profile or auth) ──
               Center(
                 child: Column(
                   children: [
-                    const CircleAvatar(radius: 40, child: Icon(Icons.person, size: 40)),
+                    const CircleAvatar(radius: 40, backgroundColor: AppColors.canvas, child: Icon(Icons.person, size: 40, color: AppColors.inkSoft)),
                     const SizedBox(height: 10),
-                    Text(name,
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleLarge
-                            ?.copyWith(fontWeight: FontWeight.w700)),
+                    Text(name, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
                     if (mobile.isNotEmpty) ...[
                       const SizedBox(height: 2),
-                      Text('+91 $mobile',
-                          style: const TextStyle(color: AppColors.inkSoft)),
+                      Text('+91 $mobile', style: const TextStyle(color: AppColors.inkSoft)),
                     ],
                     if (p != null) ...[
                       const SizedBox(height: 8),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const Icon(Icons.star_rounded,
-                              color: AppColors.accent, size: 18),
+                          const Icon(Icons.star_rounded, color: AppColors.accent, size: 18),
                           Text(' ${p.ratingAvg.toStringAsFixed(1)} (${p.ratingCount})'),
-                          const SizedBox(width: 10),
-                          StatusPill(
-                            'KYC ${p.kycStatus}',
-                            color: p.kycApproved
-                                ? AppColors.success
-                                : AppColors.info,
-                          ),
                         ],
                       ),
                     ],
                   ],
                 ),
               ),
-              const SizedBox(height: 20),
-
-              // ── editable details + vehicles (needs the fetch) ──
-              if (p == null)
-                _DetailsUnavailable(
-                  loading: async.isLoading,
-                  onRetry: () => ref.invalidate(driverProfileProvider),
-                )
-              else ...[
-                const SectionHeader('Your details'),
-                TextField(
-                    controller: _name,
-                    decoration: const InputDecoration(labelText: 'Full name')),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _email,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(labelText: 'Email (optional)'),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _license,
-                  textCapitalization: TextCapitalization.characters,
-                  decoration:
-                      const InputDecoration(labelText: 'Driving licence number'),
-                ),
-                const SizedBox(height: 16),
-                PrimaryButton(label: 'Save', onPressed: _save),
-                const SizedBox(height: 24),
-                Row(
-                  children: [
-                    Text('Vehicles',
-                        style: Theme.of(context).textTheme.titleMedium),
-                    const Spacer(),
-                    TextButton.icon(
-                      onPressed: _addVehicle,
-                      icon: const Icon(Icons.add_rounded, size: 18),
-                      label: const Text('Add'),
-                    ),
-                  ],
-                ),
-                if (p.vehicles.isEmpty)
-                  const Text('No vehicle added yet.',
-                      style: TextStyle(color: AppColors.inkSoft, fontSize: 13)),
-                ...p.vehicles.map((v) => Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: Text(VehicleCategoryInfo.of(v.category).emoji,
-                            style: const TextStyle(fontSize: 24)),
-                        title: Text(v.label.isEmpty
-                            ? VehicleCategoryInfo.of(v.category).name
-                            : v.label),
-                        subtitle: Text('${plate(v.plateNo)} · doc: ${v.docStatus}'),
-                        trailing: v.isActive
-                            ? const Chip(label: Text('Active'))
-                            : null,
-                      ),
-                    )),
-              ],
-
               const SizedBox(height: 24),
-              const Divider(),
-              const SizedBox(height: 8),
-
-              // ── account (always available, even if the profile failed) ──
-              const SectionHeader('Account'),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.notifications_rounded,
-                    color: AppColors.primary),
-                title: const Text('Notifications'),
-                trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: () => context.push('/d/notifications'),
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading:
-                    const Icon(Icons.savings_rounded, color: AppColors.secondary),
-                title: const Text('Wallet & payouts'),
-                trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: () => context.push('/d/wallet'),
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading:
-                    const Icon(Icons.swap_horiz_rounded, color: AppColors.info),
-                title: const Text('Switch to Ride'),
-                onTap: _logout,
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: _logout,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.error,
-                  side: const BorderSide(color: AppColors.error),
-                  minimumSize: const Size.fromHeight(48),
+              if (p == null)
+                _DetailsUnavailable(loading: async.isLoading, onRetry: () => ref.invalidate(driverProfileProvider))
+              else ...[
+                const Divider(height: 1),
+                AppTile(icon: Icons.person_rounded, title: 'Personal information', onTap: () => _openDetail('personal')),
+                AppTile(icon: Icons.directions_car_filled_rounded, title: 'Vehicle', onTap: () => _openDetail('vehicle')),
+                AppTile(icon: Icons.description_rounded, title: 'Documents', onTap: () => _openDetail('documents')),
+                AppTile(
+                  icon: Icons.account_balance_rounded,
+                  title: 'Bank details',
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PaymentDetailsScreen())),
                 ),
-                icon: const Icon(Icons.logout_rounded),
-                label: const Text('Log out'),
+                AppTile(icon: Icons.language_rounded, title: 'Language', onTap: _pickLanguage),
+                AppTile(icon: Icons.notifications_rounded, title: 'Notifications', onTap: () => context.push('/d/notifications')),
+                AppTile(icon: Icons.shield_rounded, title: 'Safety', iconColor: AppColors.error, onTap: () => context.push('/d/safety')),
+                AppTile(icon: Icons.help_outline_rounded, title: 'Help & support', onTap: () => context.push('/d/safety')),
+                AppTile(icon: Icons.savings_rounded, title: 'Wallet & payouts', iconColor: AppColors.secondary, onTap: () => context.push('/d/wallet')),
+                AppTile(icon: Icons.swap_horiz_rounded, title: 'Switch to Ride', iconColor: AppColors.info, onTap: _logout),
+              ],
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: OutlinedButton.icon(
+                  onPressed: _logout,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.error,
+                    side: const BorderSide(color: AppColors.error),
+                    minimumSize: const Size.fromHeight(52),
+                  ),
+                  icon: const Icon(Icons.logout_rounded),
+                  label: const Text('Log out'),
+                ),
               ),
               const SizedBox(height: 8),
             ],
@@ -285,8 +141,9 @@ class _State extends ConsumerState<DriverProfileScreen> {
   }
 }
 
-/// Inline placeholder for the details/vehicles block when `/drivers/me` hasn't
-/// loaded — the account actions above stay usable regardless.
+/// Inline placeholder for the menu block when `/drivers/me` hasn't loaded —
+/// there's nothing to show a Personal information / Vehicle / etc. menu
+/// against without it.
 class _DetailsUnavailable extends StatelessWidget {
   const _DetailsUnavailable({required this.loading, required this.onRetry});
   final bool loading;
@@ -294,32 +151,25 @@ class _DetailsUnavailable extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
+    return Padding(
       padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.cardBorder),
-      ),
-      child: Column(
-        children: [
-          if (loading)
-            const CircularProgressIndicator()
-          else ...[
-            const Icon(Icons.cloud_off_rounded, color: AppColors.inkSoft),
-            const SizedBox(height: 8),
-            const Text("Couldn't load your details and vehicles.",
-                textAlign: TextAlign.center,
-                style: TextStyle(color: AppColors.inkSoft, fontSize: 13)),
-            const SizedBox(height: 12),
-            FilledButton.tonalIcon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh_rounded, size: 18),
-              label: const Text('Retry'),
-            ),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.cardBorder)),
+        child: Column(
+          children: [
+            if (loading)
+              const CircularProgressIndicator()
+            else ...[
+              const Icon(Icons.cloud_off_rounded, color: AppColors.inkSoft),
+              const SizedBox(height: 8),
+              const Text("Couldn't load your details.", textAlign: TextAlign.center, style: TextStyle(color: AppColors.inkSoft, fontSize: 13)),
+              const SizedBox(height: 12),
+              FilledButton.tonalIcon(onPressed: onRetry, icon: const Icon(Icons.refresh_rounded, size: 18), label: const Text('Retry')),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }

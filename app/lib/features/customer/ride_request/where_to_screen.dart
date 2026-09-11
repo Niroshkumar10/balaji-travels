@@ -4,19 +4,41 @@ import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../../../core/models/models.dart';
+import '../../../core/store/recent_search_store.dart';
+import '../../../core/store/rider_contacts_store.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/util/debouncer.dart';
+import '../../../core/util/default_suggestions.dart';
 import '../../../core/util/formatters.dart';
 import '../../../core/widgets/common_widgets.dart';
 import '../../../core/widgets/map_markers.dart';
 import '../../../core/widgets/map_view.dart';
 import '../../../state/providers.dart';
 import '../ride_session_controller.dart';
+import 'set_on_map_screen.dart';
 
 enum _Step { locations, fares, confirm }
 
+/// Navigation payload for `/c/where-to` — lets the home screen jump straight
+/// into a fare search with the destination already picked (tapping a
+/// suggested place), open pre-scrolled to the "when" sheet (the "Pickup
+/// later" shortcut), or carry a Rental vehicle choice made on the home
+/// screen through to this step.
+class WhereToArgs {
+  const WhereToArgs({this.initialDrop, this.openLaterSheet = false, this.vehicleLabel});
+  final LatLngPoint? initialDrop;
+  final bool openLaterSheet;
+
+  /// e.g. "Tempo Traveller · 15-seater Tempo Traveller" — set only when the
+  /// rider came from the Rental vehicle picker, which has no backend fare
+  /// engine yet. Non-null unlocks "Continue without drop".
+  final String? vehicleLabel;
+}
+
 class WhereToScreen extends ConsumerStatefulWidget {
-  const WhereToScreen({super.key});
+  const WhereToScreen({super.key, this.args});
+  final WhereToArgs? args;
+
   @override
   ConsumerState<WhereToScreen> createState() => _WhereToScreenState();
 }
@@ -26,6 +48,8 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
 
   LatLngPoint? _pickup;
   LatLngPoint? _drop;
+  bool _scheduleLater = false;
+  String? _riderName; // null = booking for self ("Me")
 
   RideEstimate? _estimate;
   FareOption? _selected;
@@ -34,12 +58,38 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
   String? _promoApplied;
   double _promoDiscount = 0;
 
+  // "Suggestions near you" is the same fixed, instant list as the home
+  // screen (see DefaultSuggestions) — no loading state needed for it.
+  List<LatLngPoint> _recent = [];
+  bool _recentLoading = true;
+  final Set<String> _favoriting = {};
+  final Set<String> _favorited = {};
+
   bool _busy = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _prefillPickup());
+    _drop = widget.args?.initialDrop;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _prefillPickup();
+      if (widget.args?.openLaterSheet == true && mounted) _pickWhen();
+      _loadRecent();
+    });
+  }
+
+  Future<void> _loadRecent() async {
+    final recent = await RecentSearchStore.load();
+    if (!mounted) return;
+    setState(() {
+      _recent = recent;
+      _recentLoading = false;
+    });
+  }
+
+  Future<void> _setDrop(LatLngPoint point) async {
+    setState(() => _drop = point);
+    RecentSearchStore.add(point);
   }
 
   @override
@@ -66,14 +116,260 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
     final picked = await showModalBottomSheet<LatLngPoint>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => _PlaceSearchSheet(
+      builder: (_) => PlaceSearchSheet(
         title: forPickup ? 'Set pickup' : 'Set destination',
         origin: _pickup,
       ),
     );
-    if (picked != null) {
-      setState(() => forPickup ? _pickup = picked : _drop = picked);
+    if (picked == null) return;
+    if (forPickup) {
+      setState(() => _pickup = picked);
+    } else {
+      await _setDrop(picked);
     }
+  }
+
+  Future<void> _pickWhen() async {
+    var later = _scheduleLater;
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(color: AppColors.line, borderRadius: BorderRadius.circular(2)),
+                  ),
+                ),
+                Text('When do you need a ride?',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(ctx).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 8),
+                const Divider(height: 1),
+                _WhenTile(
+                  icon: Icons.bolt_rounded,
+                  title: 'Now',
+                  subtitle: 'Request a ride, hop-in, and go',
+                  selected: !later,
+                  onTap: () => setSheet(() => later = false),
+                ),
+                const Divider(height: 1),
+                _WhenTile(
+                  icon: Icons.event_rounded,
+                  title: 'Later',
+                  subtitle: 'Reserve for extra peace of mind',
+                  selected: later,
+                  onTap: () => setSheet(() => later = true),
+                ),
+                const SizedBox(height: 16),
+                PrimaryButton(label: 'Done', onPressed: () => Navigator.pop(ctx, later)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (result != null && mounted) {
+      setState(() => _scheduleLater = result);
+      if (result) {
+        showOk(context, 'Scheduled rides are coming soon — booking for now instead.');
+      }
+    }
+  }
+
+  Future<void> _switchRider() async {
+    // The sheet pops '' for "Me" and the contact's name otherwise — only on
+    // "Done". A dismiss (back/tap-outside) pops null, which here means
+    // "unchanged", not "switched to Me" — those are different things.
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _SwitchRiderSheet(current: _riderName),
+    );
+    if (picked != null) setState(() => _riderName = picked.isEmpty ? null : picked);
+  }
+
+  Future<void> _pickSavedPlace() async {
+    final res = await ref.read(miscRepoProvider).savedPlaces();
+    final places = res.valueOrNull ?? const <SavedPlace>[];
+    if (!mounted) return;
+    if (places.isEmpty) {
+      showOk(context, 'No saved places yet — add one from the star on a suggestion.');
+      return;
+    }
+    final picked = await showModalBottomSheet<SavedPlace>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(color: AppColors.line, borderRadius: BorderRadius.circular(2)),
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Saved places', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: places.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final p = places[i];
+                    return ListTile(
+                      leading: const Icon(Icons.bookmark_rounded, color: AppColors.primary),
+                      title: Text(p.label),
+                      subtitle: p.addr != null ? Text(p.addr!, maxLines: 1, overflow: TextOverflow.ellipsis) : null,
+                      onTap: () => Navigator.pop(context, p),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked != null) {
+      await _setDrop(LatLngPoint(lat: picked.lat, lng: picked.lng, addr: picked.addr ?? picked.label));
+    }
+  }
+
+  Future<void> _pickOnMap() async {
+    final picked = await Navigator.of(context).push<LatLngPoint>(
+      MaterialPageRoute(builder: (_) => SetOnMapScreen(initial: _drop ?? _pickup)),
+    );
+    if (picked != null) await _setDrop(picked);
+  }
+
+  Future<void> _chooseSuggestion(String label) async {
+    final loc = await resolveSuggestion(ref, label, lat: _pickup?.lat, lng: _pickup?.lng);
+    if (loc == null || !mounted) return;
+    await _setDrop(LatLngPoint(lat: loc.lat, lng: loc.lng, addr: loc.addr ?? label));
+  }
+
+  Future<void> _favoritePoint(LatLngPoint p) async {
+    final key = p.addr;
+    if (key == null || _favoriting.contains(key) || _favorited.contains(key)) return;
+    setState(() => _favoriting.add(key));
+    final res = await ref.read(miscRepoProvider).addSavedPlace({
+      'label': key,
+      'lat': p.lat,
+      'lng': p.lng,
+      'addr': key,
+    });
+    if (!mounted) return;
+    setState(() {
+      _favoriting.remove(key);
+      if (res.isOk) _favorited.add(key);
+    });
+    res.when(
+      ok: (_) => showOk(context, 'Added to favorites'),
+      err: (e) => showError(context, e.message),
+    );
+  }
+
+  Future<void> _favoriteSuggestion(String label) async {
+    if (_favoriting.contains(label) || _favorited.contains(label)) return;
+    setState(() => _favoriting.add(label));
+    final loc = await resolveSuggestion(ref, label, lat: _pickup?.lat, lng: _pickup?.lng);
+    if (!mounted) return;
+    if (loc == null) {
+      setState(() => _favoriting.remove(label));
+      showError(context, "Couldn't save that place. Try again.");
+      return;
+    }
+    final res = await ref.read(miscRepoProvider).addSavedPlace({
+      'label': label,
+      'lat': loc.lat,
+      'lng': loc.lng,
+      'addr': loc.addr ?? label,
+    });
+    if (!mounted) return;
+    setState(() {
+      _favoriting.remove(label);
+      if (res.isOk) _favorited.add(label);
+    });
+    res.when(
+      ok: (_) => showOk(context, 'Added to favorites'),
+      err: (e) => showError(context, e.message),
+    );
+  }
+
+  void _swapPickupDrop() {
+    if (_pickup == null && _drop == null) return;
+    setState(() {
+      final p = _pickup;
+      _pickup = _drop;
+      _drop = p;
+    });
+  }
+
+  /// For Rental (no distance-based fare engine): capture the lead — pickup
+  /// point and chosen vehicle — instead of running the local route/fare
+  /// flow, which needs a real drop.
+  void _continueWithoutDrop() {
+    final vehicle = widget.args?.vehicleLabel;
+    if (vehicle == null) return;
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 28, 24, 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Icon(Icons.support_agent_rounded, color: AppColors.primary, size: 40),
+              const SizedBox(height: 14),
+              const Text(
+                "We've got your request",
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Our team will call you to finalize the itinerary and fare for your $vehicle rental from ${_pickup?.addr ?? 'your pickup point'}.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: AppColors.inkSoft),
+              ),
+              const SizedBox(height: 20),
+              PrimaryButton(label: 'Done', onPressed: () => Navigator.pop(ctx)),
+            ],
+          ),
+        ),
+      ),
+    ).then((_) {
+      if (mounted) context.go('/c/home');
+    });
   }
 
   bool get _placesReady =>
@@ -175,29 +471,135 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
   }
 
   Widget _locationsStep() {
+    final vehicle = widget.args?.vehicleLabel;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _LocationField(
-          icon: Icons.trip_origin,
-          iconColor: AppColors.brand,
-          hint: 'Pickup location',
-          value: _pickup?.addr,
-          onTap: () => _pickPlace(forPickup: true),
+        Row(
+          children: [
+            _PillChip(
+              icon: Icons.event_rounded,
+              label: _scheduleLater ? 'Pickup later' : 'Pickup now',
+              onTap: _pickWhen,
+            ),
+            const SizedBox(width: 10),
+            _PillChip(
+              icon: Icons.person_rounded,
+              label: _riderName == null ? 'For me' : 'For $_riderName',
+              onTap: _switchRider,
+            ),
+          ],
         ),
-        const SizedBox(height: 10),
-        _LocationField(
-          icon: Icons.place_rounded,
-          iconColor: AppColors.danger,
-          hint: 'Where to?',
-          value: _drop?.addr,
+        if (vehicle != null) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppColors.primary.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.directions_bus_filled_rounded, size: 18, color: AppColors.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(vehicle, style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.primary)),
+                ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 16),
+        // Pickup + drop as one connected card — a dot for pickup, a square
+        // for drop, joined by a line. The swap button sits on that line and
+        // flips the two.
+        Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.line),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: Column(
+                  children: [
+                    _LocationField(
+                      icon: Icons.trip_origin,
+                      iconColor: AppColors.brand,
+                      hint: 'Pickup location',
+                      value: _pickup?.addr,
+                      onTap: () => _pickPlace(forPickup: true),
+                      bordered: false,
+                    ),
+                    const Divider(height: 1, indent: 46),
+                    _LocationField(
+                      icon: Icons.square_rounded,
+                      iconColor: AppColors.danger,
+                      hint: 'Where to?',
+                      value: _drop?.addr,
+                      onTap: () => _pickPlace(forPickup: false),
+                      bordered: false,
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(right: 10),
+                child: _RoundIconBtn(icon: Icons.swap_vert_rounded, onTap: _swapPickupDrop),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+        _PlanRow(icon: Icons.star_border_rounded, label: 'Saved places', onTap: _pickSavedPlace),
+        const Divider(height: 1),
+        _PlanRow(
+          icon: Icons.public_rounded,
+          label: 'Search in a different city',
           onTap: () => _pickPlace(forPickup: false),
         ),
+        const Divider(height: 1),
+        _PlanRow(icon: Icons.push_pin_outlined, label: 'Select on Map', onTap: _pickOnMap),
+
+        if (!_recentLoading && _recent.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          const SectionHeader('Recent searches'),
+          ..._recent.map((p) => _PlaceSuggestionRow(
+                icon: Icons.history_rounded,
+                title: p.addr ?? '${p.lat}, ${p.lng}',
+                favorited: _favorited.contains(p.addr),
+                busy: _favoriting.contains(p.addr),
+                onTap: () => _setDrop(p),
+                onFavorite: () => _favoritePoint(p),
+              )),
+        ],
+
+        const SizedBox(height: 20),
+        const SectionHeader('Suggestions near you'),
+        ...DefaultSuggestions.nearYou.map((label) => _PlaceSuggestionRow(
+              icon: Icons.place_rounded,
+              title: label,
+              favorited: _favorited.contains(label),
+              busy: _favoriting.contains(label),
+              onTap: () => _chooseSuggestion(label),
+              onFavorite: () => _favoriteSuggestion(label),
+            )),
+
         const SizedBox(height: 24),
         PrimaryButton(
           label: 'See fares',
           onPressed: _placesReady ? _loadFares : null,
         ),
+        if (vehicle != null) ...[
+          const SizedBox(height: 10),
+          OutlinedButton(
+            onPressed: _pickup != null ? _continueWithoutDrop : null,
+            style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(52)),
+            child: const Text('Continue Without Drop'),
+          ),
+        ],
       ],
     );
   }
@@ -441,6 +843,7 @@ class _LocationField extends StatelessWidget {
     required this.hint,
     required this.onTap,
     this.value,
+    this.bordered = true,
   });
 
   final IconData icon;
@@ -449,9 +852,39 @@ class _LocationField extends StatelessWidget {
   final String? value;
   final VoidCallback onTap;
 
+  /// False when this field sits flush inside a shared connector card (the
+  /// combined pickup/drop layout) instead of standing alone.
+  final bool bordered;
+
   @override
   Widget build(BuildContext context) {
     final filled = value != null && value!.isNotEmpty;
+    final content = Row(
+      children: [
+        Icon(icon, color: iconColor, size: bordered ? 20 : 14),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            filled ? value! : hint,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: filled ? null : AppColors.inkSoft,
+              fontSize: 15,
+            ),
+          ),
+        ),
+      ],
+    );
+    if (!bordered) {
+      return InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: content,
+        ),
+      );
+    }
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
@@ -462,19 +895,301 @@ class _LocationField extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: AppColors.line),
         ),
+        child: content,
+      ),
+    );
+  }
+}
+
+/// Rounded outline chip used for "Pickup later" / "For me" above the
+/// pickup/drop card.
+class _PillChip extends StatelessWidget {
+  const _PillChip({required this.icon, required this.label, required this.onTap});
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.canvas,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 16, color: AppColors.inkSoft),
+              const SizedBox(width: 6),
+              Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+              const SizedBox(width: 2),
+              const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: AppColors.inkSoft),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Plain icon + label row used for the "Saved places" / "Search in a
+/// different city" / "Set location on map" shortcuts.
+class _PlanRow extends StatelessWidget {
+  const _PlanRow({required this.icon, required this.label, required this.onTap});
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14),
         child: Row(
           children: [
-            Icon(icon, color: iconColor, size: 20),
-            const SizedBox(width: 12),
+            Icon(icon, size: 20, color: AppColors.inkSoft),
+            const SizedBox(width: 16),
+            Text(label, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Small circular icon button used beside the pickup/drop card ("+" add-stop,
+/// swap pickup/drop).
+class _RoundIconBtn extends StatelessWidget {
+  const _RoundIconBtn({required this.icon, required this.onTap});
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.canvas,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Icon(icon, size: 18, color: AppColors.inkSoft),
+        ),
+      ),
+    );
+  }
+}
+
+/// One row in the "Recent searches" / "Suggestions near you" lists — a place
+/// with a star/heart to save it as a favorite.
+class _PlaceSuggestionRow extends StatelessWidget {
+  const _PlaceSuggestionRow({
+    required this.icon,
+    required this.title,
+    required this.favorited,
+    required this.busy,
+    required this.onTap,
+    required this.onFavorite,
+    this.subtitle,
+  });
+
+  final IconData icon;
+  final String title;
+  final String? subtitle;
+  final bool favorited;
+  final bool busy;
+  final VoidCallback onTap;
+  final VoidCallback onFavorite;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(icon, color: AppColors.inkSoft),
+      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: subtitle != null ? Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis) : null,
+      onTap: onTap,
+      trailing: busy
+          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+          : IconButton(
+              icon: Icon(
+                favorited ? Icons.star_rounded : Icons.star_border_rounded,
+                color: favorited ? AppColors.secondary : AppColors.inkSoft,
+              ),
+              onPressed: onFavorite,
+            ),
+    );
+  }
+}
+
+/// One row in the "When do you need a ride?" sheet.
+class _WhenTile extends StatelessWidget {
+  const _WhenTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    required this.onTap,
+  });
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        child: Row(
+          children: [
+            Icon(icon, color: AppColors.textPrimary),
+            const SizedBox(width: 16),
             Expanded(
-              child: Text(
-                filled ? value! : hint,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: filled ? null : AppColors.inkSoft,
-                  fontSize: 15,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: const TextStyle(color: AppColors.inkSoft, fontSize: 13)),
+                ],
+              ),
+            ),
+            Icon(
+              selected ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
+              color: selected ? AppColors.primary : AppColors.inkSoft,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "Switch Rider" — pick who this ride is for. "Me" is always first and
+/// can't be removed; "Add new contact" appends a local, on-device entry
+/// (see RiderContactsStore — there's no backend field to send this to, so
+/// it's a display-only label carried on the pill above, not sent with the
+/// booking).
+class _SwitchRiderSheet extends StatefulWidget {
+  const _SwitchRiderSheet({required this.current});
+  final String? current;
+
+  @override
+  State<_SwitchRiderSheet> createState() => _SwitchRiderSheetState();
+}
+
+class _SwitchRiderSheetState extends State<_SwitchRiderSheet> {
+  List<RiderContact> _contacts = [];
+  late String? _selected = widget.current;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    RiderContactsStore.load().then((c) {
+      if (mounted) {
+        setState(() {
+          _contacts = c;
+          _loading = false;
+        });
+      }
+    });
+  }
+
+  Future<void> _addContact() async {
+    final nameCtrl = TextEditingController();
+    final phoneCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add new contact'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: nameCtrl, autofocus: true, decoration: const InputDecoration(hintText: 'Name')),
+            const SizedBox(height: 8),
+            TextField(
+              controller: phoneCtrl,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(hintText: 'Mobile number'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Add')),
+        ],
+      ),
+    );
+    if (ok != true || nameCtrl.text.trim().isEmpty) return;
+    final contact = RiderContact(name: nameCtrl.text.trim(), phone: phoneCtrl.text.trim());
+    await RiderContactsStore.add(contact);
+    if (!mounted) return;
+    setState(() {
+      _contacts = [..._contacts, contact];
+      _selected = contact.name;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(0, 12, 0, 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(color: AppColors.line, borderRadius: BorderRadius.circular(2)),
+            ),
+            Text('Switch Rider', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            const Divider(height: 1),
+            ListTile(
+              leading: const CircleAvatar(child: Icon(Icons.person_rounded)),
+              title: const Text('Me'),
+              trailing: Icon(
+                _selected == null ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
+                color: _selected == null ? AppColors.primary : AppColors.inkSoft,
+              ),
+              onTap: () => setState(() => _selected = null),
+            ),
+            if (_loading)
+              const Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator())
+            else
+              for (final c in _contacts)
+                ListTile(
+                  leading: const CircleAvatar(child: Icon(Icons.person_outline_rounded)),
+                  title: Text(c.name),
+                  subtitle: c.phone.isNotEmpty ? Text(c.phone) : null,
+                  trailing: Icon(
+                    _selected == c.name ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
+                    color: _selected == c.name ? AppColors.primary : AppColors.inkSoft,
+                  ),
+                  onTap: () => setState(() => _selected = c.name),
                 ),
+            ListTile(
+              leading: const Icon(Icons.person_add_alt_1_rounded, color: AppColors.primary),
+              title: const Text('Add new contact', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600)),
+              onTap: _addContact,
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: PrimaryButton(
+                label: 'Done',
+                onPressed: () => Navigator.pop(context, _selected ?? ''),
               ),
             ),
           ],
@@ -646,16 +1361,16 @@ class _SearchHint extends StatelessWidget {
 }
 
 /// Autocomplete search sheet backed by the server-proxied Places API.
-class _PlaceSearchSheet extends ConsumerStatefulWidget {
-  const _PlaceSearchSheet({required this.title, this.origin});
+class PlaceSearchSheet extends ConsumerStatefulWidget {
+  const PlaceSearchSheet({super.key, required this.title, this.origin});
   final String title;
   final LatLngPoint? origin;
 
   @override
-  ConsumerState<_PlaceSearchSheet> createState() => _PlaceSearchSheetState();
+  ConsumerState<PlaceSearchSheet> createState() => PlaceSearchSheetState();
 }
 
-class _PlaceSearchSheetState extends ConsumerState<_PlaceSearchSheet> {
+class PlaceSearchSheetState extends ConsumerState<PlaceSearchSheet> {
   final _ctrl = TextEditingController();
   final _debouncer = Debouncer();
   List<PlacePrediction> _results = [];

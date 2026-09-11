@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/auth/session.dart';
+import 'core/models/models.dart';
 import 'features/auth/login_screen.dart';
 import 'features/auth/otp_screen.dart';
 import 'features/auth/role_pick_screen.dart';
@@ -11,6 +12,8 @@ import 'features/customer/history/ride_history_screen.dart';
 import 'features/customer/home/customer_home_screen.dart';
 import 'features/customer/notifications/notifications_screen.dart';
 import 'features/customer/offers/offers_screen.dart';
+import 'features/customer/outstation/outstation_plan_screen.dart';
+import 'features/customer/outstation/trip_review_screen.dart';
 import 'features/customer/payment/payment_screen.dart';
 import 'features/customer/profile/customer_profile_screen.dart';
 import 'features/customer/rating/rating_screen.dart';
@@ -18,12 +21,20 @@ import 'features/customer/ride_request/where_to_screen.dart';
 import 'features/customer/saved_places/saved_places_screen.dart';
 import 'features/customer/support/support_screen.dart';
 import 'features/customer/tracking/ride_tracking_screen.dart';
+import 'features/customer/wallet/wallet_screen.dart';
 import 'features/driver/driver_shell.dart';
 import 'features/driver/earnings/wallet_screen.dart';
 import 'features/driver/notifications/driver_notifications_screen.dart';
 import 'features/driver/offer/ride_offer_screen.dart';
+import 'features/driver/profile/driver_safety_help_screen.dart';
+import 'features/driver/rating/driver_rating_screen.dart';
 import 'features/driver/ride/driver_ride_screen.dart';
-import 'features/driver/setup/driver_setup_screen.dart';
+import 'features/auth/role_splash_screen.dart';
+import 'features/driver/onboarding/application_submitted_screen.dart';
+import 'features/driver/onboarding/onboarding_entry.dart';
+import 'features/driver/onboarding/registration_checklist_screen.dart';
+import 'features/driver/onboarding/review_submit_screen.dart';
+import 'features/driver/onboarding/verification_status_screen.dart';
 import 'features/onboarding/onboarding_screen.dart';
 import 'features/permission/location_permission_screen.dart';
 import 'features/splash/splash_screen.dart';
@@ -64,8 +75,15 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
       final onAuthRoute = _authRoutes.contains(loc);
 
       if (st.status == AuthStatus.unauthenticated) {
-        // allow the pre-login funnel; anything else → role picker
-        if (loc == '/onboarding' || loc == '/role' || loc == '/login' || loc == '/otp') {
+        // allow the pre-login funnel — including the Ride/Drive splash
+        // screens, which run before login exists — anything else → role
+        // picker.
+        if (loc == '/onboarding' ||
+            loc == '/role' ||
+            loc == '/login' ||
+            loc == '/otp' ||
+            loc == '/c/onboarding/splash' ||
+            loc == '/d/onboarding/splash') {
           return null;
         }
         return '/role';
@@ -101,8 +119,12 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/permission', builder: (_, __) => const LocationPermissionScreen()),
 
       // ── customer ──
+      GoRoute(path: '/c/onboarding/splash', builder: (_, __) => const RoleSplashScreen(role: AppRole.customer)),
       GoRoute(path: '/c/home', builder: (_, __) => const CustomerHomeScreen()),
-      GoRoute(path: '/c/where-to', builder: (_, __) => const WhereToScreen()),
+      GoRoute(
+        path: '/c/where-to',
+        builder: (_, s) => WhereToScreen(args: s.extra as WhereToArgs?),
+      ),
       GoRoute(
         path: '/c/ride/:id',
         builder: (_, s) => RideTrackingScreen(rideId: int.parse(s.pathParameters['id']!)),
@@ -121,13 +143,31 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
         builder: (_, s) => RideDetailScreen(rideId: int.parse(s.pathParameters['id']!)),
       ),
       GoRoute(path: '/c/offers', builder: (_, __) => const OffersScreen()),
+      GoRoute(
+        path: '/c/trip-review',
+        builder: (_, s) => TripReviewScreen(args: s.extra as TripReviewArgs),
+      ),
+      GoRoute(
+        path: '/c/plan-trip',
+        builder: (_, s) => OutstationPlanScreen(pickup: s.extra as LatLngPoint),
+      ),
       GoRoute(path: '/c/saved-places', builder: (_, __) => const SavedPlacesScreen()),
       GoRoute(path: '/c/profile', builder: (_, __) => const CustomerProfileScreen()),
       GoRoute(path: '/c/support', builder: (_, __) => const SupportScreen()),
+      GoRoute(path: '/c/wallet', builder: (_, __) => const CustomerWalletScreen()),
       GoRoute(path: '/c/notifications', builder: (_, __) => const NotificationsScreen()),
 
       // ── driver ──
-      GoRoute(path: '/d/setup', builder: (_, __) => const DriverSetupScreen()),
+      GoRoute(path: '/d/setup', builder: (_, __) => const DriverOnboardingEntry()),
+      GoRoute(path: '/d/onboarding/splash', builder: (_, __) => const RoleSplashScreen(role: AppRole.driver)),
+      GoRoute(path: '/d/onboarding', builder: (_, __) => const DriverOnboardingEntry()),
+      GoRoute(path: '/d/onboarding/checklist', builder: (_, __) => const RegistrationChecklistScreen()),
+      GoRoute(path: '/d/onboarding/review', builder: (_, __) => const ReviewSubmitScreen()),
+      GoRoute(
+        path: '/d/onboarding/submitted',
+        builder: (_, s) => ApplicationSubmittedScreen(applicationId: s.extra as String),
+      ),
+      GoRoute(path: '/d/onboarding/status', builder: (_, __) => const VerificationStatusScreen()),
       GoRoute(path: '/d/dashboard', builder: (_, __) => const DriverShell()),
       GoRoute(path: '/d/earnings', builder: (_, __) => const DriverShell(initialTab: 1)),
       GoRoute(path: '/d/history', builder: (_, __) => const DriverShell(initialTab: 2)),
@@ -142,6 +182,19 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(path: '/d/wallet', builder: (_, __) => const WalletScreen()),
       GoRoute(path: '/d/notifications', builder: (_, __) => const DriverNotificationsScreen()),
+      GoRoute(path: '/d/safety', builder: (_, __) => const DriverSafetyHelpScreen()),
+      GoRoute(
+        path: '/d/rate/:id',
+        builder: (_, s) => DriverRatingScreen(rideId: int.parse(s.pathParameters['id']!)),
+      ),
+      GoRoute(
+        path: '/d/trip-detail/:id',
+        builder: (_, s) => RideDetailScreen(
+          rideId: int.parse(s.pathParameters['id']!),
+          title: 'Trip details',
+          fallbackRoute: '/d/history',
+        ),
+      ),
     ],
   );
 });

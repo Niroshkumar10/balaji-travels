@@ -34,12 +34,25 @@ class PendingOffer {
   final int expiresInSec;
 }
 
+/// Rider details for the current trip — only available from the real-time
+/// `ride:assigned` event at the moment a driver accepts (the REST ride
+/// enrichment doesn't return the customer's name/rating to the driver side,
+/// only vehicle/driver info), so this is best-effort: present right after
+/// acceptance, gone if the app is reloaded mid-trip.
+class RiderInfo {
+  const RiderInfo({required this.name, this.rating, this.phoneMasked});
+  final String name;
+  final double? rating;
+  final String? phoneMasked;
+}
+
 class DriverState {
   const DriverState({
     this.online = false,
     this.availability = 'offline',
     this.ride,
     this.offer,
+    this.rider,
     this.customerLat,
     this.customerLng,
     this.busy = false,
@@ -52,6 +65,7 @@ class DriverState {
   final String availability;
   final Ride? ride;
   final PendingOffer? offer;
+  final RiderInfo? rider;
   final double? customerLat;
   final double? customerLng;
   final bool busy;
@@ -69,6 +83,7 @@ class DriverState {
     String? availability,
     Ride? ride,
     Object? offer = _sentinel,
+    Object? rider = _sentinel,
     double? customerLat,
     double? customerLng,
     bool? busy,
@@ -81,6 +96,7 @@ class DriverState {
         availability: availability ?? this.availability,
         ride: ride ?? this.ride,
         offer: identical(offer, _sentinel) ? this.offer : offer as PendingOffer?,
+        rider: identical(rider, _sentinel) ? this.rider : rider as RiderInfo?,
         customerLat: customerLat ?? this.customerLat,
         customerLng: customerLng ?? this.customerLng,
         busy: busy ?? this.busy,
@@ -320,6 +336,21 @@ class DriverController extends StateNotifier<DriverState> {
     return err;
   }
 
+  /// Real ride cancellation — used by the "Start trip?" checkpoint's Cancel
+  /// button. Frees the driver back to available on success.
+  Future<String?> cancelRide({String? reason}) async {
+    final id = _rideId;
+    if (id == null) return 'No active ride';
+    state = state.copyWith(busy: true);
+    final res = await _rides.cancel(id, reason: reason);
+    state = state.copyWith(busy: false);
+    final err = res.when(ok: (_) => null, err: (e) => e.message);
+    if (err == null) {
+      state = DriverState(online: state.online, availability: state.online ? 'available' : 'offline');
+    }
+    return err;
+  }
+
   // ── data ─────────────────────────────────────────────────────────────────
   Future<void> loadActive() async {
     final res = await _rides.active();
@@ -427,6 +458,16 @@ class DriverController extends StateNotifier<DriverState> {
           );
         }
       case 'ride:assigned':
+        final c = _map(d['customer']);
+        if (c.isNotEmpty) {
+          state = state.copyWith(
+            rider: RiderInfo(
+              name: c['name']?.toString() ?? 'Rider',
+              phoneMasked: c['phoneMasked']?.toString(),
+            ),
+          );
+        }
+        _refetchActive();
       case 'ride:status':
       case 'ride:cancelled':
       case 'ride:payment_update':
