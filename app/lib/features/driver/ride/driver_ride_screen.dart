@@ -28,6 +28,7 @@ class _State extends ConsumerState<DriverRideScreen> {
   String _otp = '';
   int _waitingSeconds = 0;
   Timer? _waitTimer;
+  bool _pickupConfirmed = false;
 
   @override
   void initState() {
@@ -62,6 +63,13 @@ class _State extends ConsumerState<DriverRideScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(driverControllerProvider, (prev, next) {
+      final was = prev?.ride?.status;
+      final now = next.ride?.status;
+      if (now == RideStatus.completed && was != RideStatus.completed) {
+        context.push('/d/rate/${next.ride!.id}');
+      }
+    });
     final state = ref.watch(driverControllerProvider);
     final ride = state.ride;
 
@@ -151,13 +159,17 @@ class _State extends ConsumerState<DriverRideScreen> {
               waitingSeconds: _waitingSeconds,
               waiting: _waitTimer != null,
               onToggleWait: _toggleWait,
+              pickupConfirmed: _pickupConfirmed,
+              onConfirmPickup: () => setState(() => _pickupConfirmed = true),
               onStartNav: () => _act(ref.read(driverControllerProvider.notifier).startNavigation),
               onArrived: () => _act(ref.read(driverControllerProvider.notifier).markArrived),
               onStart: () => _act(() => ref.read(driverControllerProvider.notifier).startRide(_otp)),
+              onCancel: () => _act(ref.read(driverControllerProvider.notifier).cancelRide),
               onComplete: () => _act(() => ref
                   .read(driverControllerProvider.notifier)
                   .completeRide((_waitingSeconds / 60).ceil())),
               onSettleCash: () => _act(ref.read(driverControllerProvider.notifier).settleCash),
+              rider: state.rider,
               onDone: () {
                 ref.read(driverControllerProvider.notifier).clearFinishedRide();
                 context.go('/d/dashboard');
@@ -179,12 +191,16 @@ class _Panel extends StatelessWidget {
     required this.waitingSeconds,
     required this.waiting,
     required this.onToggleWait,
+    required this.pickupConfirmed,
+    required this.onConfirmPickup,
     required this.onStartNav,
     required this.onArrived,
     required this.onStart,
+    required this.onCancel,
     required this.onComplete,
     required this.onSettleCash,
     required this.onDone,
+    this.rider,
   });
 
   final Ride ride;
@@ -194,12 +210,16 @@ class _Panel extends StatelessWidget {
   final int waitingSeconds;
   final bool waiting;
   final VoidCallback onToggleWait;
+  final bool pickupConfirmed;
+  final VoidCallback onConfirmPickup;
   final VoidCallback onStartNav;
   final VoidCallback onArrived;
   final VoidCallback onStart;
+  final VoidCallback onCancel;
   final VoidCallback onComplete;
   final VoidCallback onSettleCash;
   final VoidCallback onDone;
+  final RiderInfo? rider;
 
   @override
   Widget build(BuildContext context) {
@@ -223,18 +243,56 @@ class _Panel extends StatelessWidget {
   Widget _body(BuildContext context) {
     switch (ride.status) {
       case RideStatus.driverAssigned:
-        return _stack(context, 'Pick up ${_customerName()}', ride.pickupAddr ?? 'Pickup point', [
-          PrimaryButton(label: 'Start navigation to pickup', onPressed: onStartNav),
-        ]);
-      case RideStatus.driverArriving:
-        return _stack(context, 'Heading to pickup', ride.pickupAddr ?? 'Pickup point', [
-          PrimaryButton(label: 'I\'ve arrived', onPressed: onArrived),
-        ]);
-      case RideStatus.driverArrived:
         return Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (rider != null) ...[_RiderRow(rider: rider!), const SizedBox(height: 14)],
+            _header(context, 'Pick up ${_customerName()}'),
+            const SizedBox(height: 4),
+            Text(ride.pickupAddr ?? 'Pickup point', style: const TextStyle(color: AppColors.inkSoft)),
+            const SizedBox(height: 16),
+            PrimaryButton(label: 'Start navigation to pickup', onPressed: onStartNav),
+          ],
+        );
+      case RideStatus.driverArriving:
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (rider != null) ...[_RiderRow(rider: rider!), const SizedBox(height: 14)],
+            _header(context, 'Heading to pickup'),
+            const SizedBox(height: 4),
+            Text(ride.pickupAddr ?? 'Pickup point', style: const TextStyle(color: AppColors.inkSoft)),
+            const SizedBox(height: 16),
+            PrimaryButton(label: 'I\'ve arrived', onPressed: onArrived),
+          ],
+        );
+      case RideStatus.driverArrived:
+        if (!pickupConfirmed) {
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (rider != null) ...[_RiderRow(rider: rider!), const SizedBox(height: 14)],
+              _header(context, 'Start trip?'),
+              const SizedBox(height: 4),
+              const Text(
+                "Confirm that you've picked up the customer.",
+                style: TextStyle(color: AppColors.inkSoft),
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton(onPressed: onCancel, child: const Text('Cancel')),
+              const SizedBox(height: 10),
+              PrimaryButton(label: 'Start trip', onPressed: onConfirmPickup),
+            ],
+          );
+        }
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (rider != null) ...[_RiderRow(rider: rider!), const SizedBox(height: 14)],
             _header(context, 'Ask the customer for the OTP'),
             const SizedBox(height: 14),
             OtpInput(length: 4, onChanged: onOtpChanged),
@@ -251,7 +309,7 @@ class _Panel extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _header(context, 'On the way to destination'),
+            _header(context, 'Trip in progress'),
             const SizedBox(height: 4),
             Text(ride.dropAddr ?? 'Destination',
                 style: const TextStyle(color: AppColors.inkSoft)),
@@ -302,16 +360,35 @@ class _Panel extends StatelessWidget {
           ],
         );
       case RideStatus.completed:
+        final b = ride.fareBreakdown;
+        final base = (b['base'] as num?)?.toDouble();
+        final distanceKm = (b['distance_km'] as num?)?.toDouble();
+        final distanceCharge = (b['distance_charge'] as num?)?.toDouble();
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const Icon(Icons.check_circle_rounded, size: 44, color: AppColors.success),
             const SizedBox(height: 8),
             Text('Trip complete', style: Theme.of(context).textTheme.titleLarge),
-            Text('${money(ride.finalFare)} collected',
-                style: const TextStyle(color: AppColors.inkSoft)),
             const SizedBox(height: 16),
-            PrimaryButton(label: 'Back to dashboard', onPressed: onDone),
+            if (base != null || distanceKm != null)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(color: AppColors.canvas, borderRadius: BorderRadius.circular(14)),
+                child: Column(
+                  children: [
+                    if (base != null) _FareRow('Base fare', money(base)),
+                    if (distanceKm != null) _FareRow('Distance (${distanceKm.toStringAsFixed(1)} km)', money(distanceCharge ?? 0)),
+                    const Divider(height: 20),
+                    _FareRow('Total', money(ride.finalFare ?? ride.amountDue), bold: true),
+                  ],
+                ),
+              )
+            else
+              Text('${money(ride.finalFare)} collected', style: const TextStyle(color: AppColors.inkSoft)),
+            const SizedBox(height: 16),
+            PrimaryButton(label: 'Rate your rider', onPressed: () => context.push('/d/rate/${ride.id}')),
           ],
         );
       default:
@@ -333,16 +410,61 @@ class _Panel extends StatelessWidget {
         child: Text(text, style: Theme.of(context).textTheme.titleMedium),
       );
 
-  Widget _stack(BuildContext context, String title, String subtitle, List<Widget> actions) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
+}
+
+class _FareRow extends StatelessWidget {
+  const _FareRow(this.label, this.value, {this.bold = false});
+  final String label;
+  final String value;
+  final bool bold;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextStyle(fontWeight: bold ? FontWeight.w800 : FontWeight.w500, fontSize: bold ? 16 : 14);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Text(label, style: bold ? style : style.copyWith(color: AppColors.inkSoft)),
+          const Spacer(),
+          Text(value, style: style),
+        ],
+      ),
+    );
+  }
+}
+
+class _RiderRow extends StatelessWidget {
+  const _RiderRow({required this.rider});
+  final RiderInfo rider;
+
+  void _unavailable(BuildContext context, String what) =>
+      showError(context, "$what isn't available — the customer's number is kept private for safety.");
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
       children: [
-        _header(context, title),
-        const SizedBox(height: 4),
-        Text(subtitle, style: const TextStyle(color: AppColors.inkSoft)),
-        const SizedBox(height: 16),
-        ...actions,
+        const CircleAvatar(radius: 20, backgroundColor: AppColors.canvas, child: Icon(Icons.person, color: AppColors.inkSoft)),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(rider.name, style: const TextStyle(fontWeight: FontWeight.w700)),
+              if (rider.rating != null)
+                Row(
+                  children: [
+                    const Icon(Icons.star_rounded, size: 14, color: AppColors.secondary),
+                    const SizedBox(width: 2),
+                    Text(rider.rating!.toStringAsFixed(1), style: const TextStyle(color: AppColors.inkSoft, fontSize: 12.5)),
+                  ],
+                ),
+            ],
+          ),
+        ),
+        IconButton(icon: const Icon(Icons.call_outlined), onPressed: () => _unavailable(context, 'Calling')),
+        IconButton(icon: const Icon(Icons.chat_bubble_outline_rounded), onPressed: () => _unavailable(context, 'Chat')),
       ],
     );
   }

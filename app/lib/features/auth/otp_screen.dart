@@ -11,7 +11,7 @@ import '../../core/widgets/otp_input.dart';
 import '../../state/providers.dart';
 
 const _otpLength = 6;
-const _resendCooldown = 30;
+const _resendCooldown = 45;
 
 class OtpScreen extends ConsumerStatefulWidget {
   const OtpScreen({
@@ -96,21 +96,42 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
     );
   }
 
+  void _key(String d) {
+    _fieldKey.currentState?.appendDigit(d);
+  }
+
+  void _backspace() {
+    _fieldKey.currentState?.backspace();
+  }
+
+  String get _resendLabel {
+    final m = (_resendIn ~/ 60).toString().padLeft(2, '0');
+    final s = (_resendIn % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Verify number')),
+      backgroundColor: Colors.white,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const SizedBox(height: 12),
-              Text('Enter the code',
-                  style: Theme.of(context).textTheme.headlineSmall),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_back_rounded),
+                  onPressed: () => Navigator.of(context).canPop() ? Navigator.of(context).pop() : context.go('/role'),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text('Verify your number',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
               const SizedBox(height: 6),
-              Text('Sent to +91 ${widget.mobile}',
+              Text("We've sent a 6-digit code to +91 ${widget.mobile}",
                   style: const TextStyle(color: AppColors.inkSoft)),
               if (_devCode != null) ...[
                 const SizedBox(height: 16),
@@ -127,26 +148,97 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
               OtpInput(
                 key: _fieldKey,
                 length: _otpLength,
+                readOnly: true,
                 onChanged: (v) => setState(() => _code = v),
                 onCompleted: (_) => _verify(),
               ),
               const SizedBox(height: 20),
               Center(
                 child: _resendIn > 0
-                    ? Text('Resend code in ${_resendIn}s',
-                        style: const TextStyle(color: AppColors.inkSoft))
+                    ? Text('Resend in $_resendLabel', style: const TextStyle(color: AppColors.inkSoft))
                     : TextButton(
                         onPressed: _resend,
                         child: const Text('Resend code'),
                       ),
               ),
+              if (_busy) ...[
+                const SizedBox(height: 16),
+                const Center(child: SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))),
+              ],
               const Spacer(),
-              PrimaryButton(
-                label: 'Verify',
-                busy: _busy,
-                onPressed: _code.length == _otpLength ? _verify : null,
-              ),
+              _Keypad(onDigit: _key, onBackspace: _backspace),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// In-app numeric keypad — the reference uses this instead of the OS
+/// keyboard so the OTP boxes stay visible above it at all times.
+class _Keypad extends StatelessWidget {
+  const _Keypad({required this.onDigit, required this.onBackspace});
+  final ValueChanged<String> onDigit;
+  final VoidCallback onBackspace;
+
+  static const _rows = [
+    ['1', '2', '3'],
+    ['4', '5', '6'],
+    ['7', '8', '9'],
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final row in _rows)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(
+              children: <Widget>[
+                for (var i = 0; i < row.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 10),
+                  Expanded(child: _Key(label: row[i], onTap: () => onDigit(row[i]))),
+                ],
+              ],
+            ),
+          ),
+        Row(
+          children: [
+            const Expanded(child: SizedBox()),
+            const SizedBox(width: 10),
+            Expanded(child: _Key(label: '0', onTap: () => onDigit('0'))),
+            const SizedBox(width: 10),
+            Expanded(child: _Key(icon: Icons.backspace_outlined, onTap: onBackspace)),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _Key extends StatelessWidget {
+  const _Key({this.label, this.icon, required this.onTap});
+  final String? label;
+  final IconData? icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.canvas,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: SizedBox(
+          height: 52,
+          child: Center(
+            child: label != null
+                ? Text(label!, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600))
+                : Icon(icon, size: 20, color: AppColors.inkSoft),
           ),
         ),
       ),
@@ -193,7 +285,6 @@ class _DevCodeCard extends StatelessWidget {
                     fontSize: 22,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 6,
-                    fontFeatures: [FontFeature.tabularFigures()],
                   ),
                 ),
               ],
