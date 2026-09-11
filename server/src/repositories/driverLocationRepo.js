@@ -74,13 +74,20 @@ const driverLocationRepo = {
       });
     }
 
+    // INNER JOIN, fully validated: the driver's category comes ONLY from the
+    // vehicle that current_vehicle_id points at, and only when that vehicle is
+    // active, not soft-deleted, and actually belongs to this driver. A driver
+    // without such a pairing can never be dispatched, so they must not appear.
     const rows = await ctx.query(
       `SELECT d.id AS driver_id, d.rating_avg, d.current_vehicle_id,
               v.id AS vehicle_id, v.category AS vehicle_category, v.plate_no,
               dl.lat, dl.lng, dl.bearing, dl.updated_at
          FROM rt_driver_locations dl
          JOIN rt_drivers d  ON d.id = dl.driver_id
-         LEFT JOIN rt_vehicles v ON v.id = d.current_vehicle_id AND v.is_active = 1
+         JOIN rt_vehicles v ON v.id = d.current_vehicle_id
+                           AND v.driver_id = d.id
+                           AND v.is_active = 1
+                           AND v.deleted_at IS NULL
         WHERE d.is_online = 1
           AND d.availability = 'available'
           AND d.kyc_status = 'approved'
@@ -129,7 +136,10 @@ const driverLocationRepo = {
          (SELECT COUNT(*)
             FROM rt_drivers d
             JOIN rt_driver_locations dl ON dl.driver_id = d.id
-            JOIN rt_vehicles v ON v.id = d.current_vehicle_id AND v.is_active = 1
+            JOIN rt_vehicles v ON v.id = d.current_vehicle_id
+                              AND v.driver_id = d.id
+                              AND v.is_active = 1
+                              AND v.deleted_at IS NULL
            WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
              AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
              AND dl.lat BETWEEN :latMin AND :latMax AND dl.lng BETWEEN :lngMin AND :lngMax
@@ -143,6 +153,31 @@ const driverLocationRepo = {
         category,
       },
     );
+
+    // Per-driver vehicle breakdown for the online pool, so the log can name
+    // exactly why each driver was (or wasn't) a category match. LEFT JOIN on
+    // purpose: we still want to SEE a driver whose current_vehicle_id doesn't
+    // resolve to a valid active owned vehicle.
+    const drivers = await ctx.query(
+      `SELECT d.id AS driver_id,
+              d.current_vehicle_id,
+              v.id       AS active_vehicle_id,
+              v.category AS vehicle_category,
+              v.is_active,
+              (v.id IS NOT NULL AND v.category = :category) AS category_ok
+         FROM rt_drivers d
+         JOIN rt_driver_locations dl ON dl.driver_id = d.id
+         LEFT JOIN rt_vehicles v ON v.id = d.current_vehicle_id
+                               AND v.driver_id = d.id
+                               AND v.is_active = 1
+                               AND v.deleted_at IS NULL
+        WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
+          AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
+        ORDER BY d.id
+        LIMIT 20`,
+      { staleSeconds, category },
+    );
+
     return {
       online: Number(row?.online ?? 0),
       available: Number(row?.available ?? 0),
@@ -154,6 +189,15 @@ const driverLocationRepo = {
       staleSeconds,
       radiusKm: limited ? radiusKm : null, // null → no distance limit
       category,
+      requestedCategory: category,
+      drivers: (drivers ?? []).map((r) => ({
+        driverId: r.driver_id,
+        currentVehicleId: r.current_vehicle_id ?? null,
+        activeVehicleId: r.active_vehicle_id ?? null,
+        vehicleCategory: r.vehicle_category ?? null,
+        isActive: r.is_active == null ? null : Number(r.is_active),
+        categoryOk: !!Number(r.category_ok),
+      })),
     };
   },
 

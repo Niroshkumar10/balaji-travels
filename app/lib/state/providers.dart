@@ -21,7 +21,11 @@ final Provider<Session> sessionProvider = Provider<Session>(
 );
 
 final Provider<SocketClient> socketClientProvider = Provider<SocketClient>((ref) {
-  final c = SocketClient();
+  final c = SocketClient()
+    // Handshake refused for an auth reason (token superseded / expired) →
+    // reconnecting can't help, so drop the session and send the user to login.
+    // Same lazy apiClient↔authController cycle as `onUnauthorized` above.
+    ..onAuthFailure = () => ref.read(authControllerProvider.notifier).forceLogout();
   ref.onDispose(c.dispose);
   return c;
 });
@@ -53,5 +57,6 @@ final StateNotifierProvider<AuthController, AuthState> authControllerProvider =
     session: ref.watch(sessionProvider),
     authRepo: ref.watch(authRepoProvider),
     socket: ref.watch(socketClientProvider),
+    ref: ref,
   );
 });

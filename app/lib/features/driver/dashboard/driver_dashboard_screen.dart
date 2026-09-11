@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import '../../../core/config/app_config.dart';
+import '../../../core/realtime/socket_client.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/util/formatters.dart';
 import '../../../core/widgets/common_widgets.dart';
@@ -41,6 +43,7 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
     final state = ref.watch(driverControllerProvider);
     final profileAsync = ref.watch(driverProfileProvider);
     final earnings = ref.watch(todayEarningsProvider);
+    final session = ref.watch(sessionProvider);
 
     return Scaffold(
       body: Stack(
@@ -49,20 +52,44 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(12),
-              child: Row(
+              child: Column(
                 children: [
-                  earnings.maybeWhen(
-                    data: (s) => _Pill(
-                      icon: Icons.account_balance_wallet_rounded,
-                      text: 'Today ${money(s.net)}',
+                  Row(
+                    children: [
+                      earnings.maybeWhen(
+                        data: (s) => _Pill(
+                          icon: Icons.account_balance_wallet_rounded,
+                          text: 'Today ${money(s.net)}',
+                        ),
+                        orElse: () => const SizedBox.shrink(),
+                      ),
+                      const Spacer(),
+                      _RoundBtn(
+                        icon: Icons.notifications_none_rounded,
+                        onTap: () => context.push('/d/notifications'),
+                      ),
+                    ],
+                  ),
+                  if (AppConfig.isDev)
+                    Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.72),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        'build: $socketClientBuildMarker\n'
+                        'session: role=${session.role?.name} userId=${session.userId} mobile=${session.mobile}\n'
+                        'socket: ${state.socketState}   ·   last event: ${state.lastEvent ?? "(none)"}'
+                        '${state.offer != null ? "   ·   OFFER #${state.offer!.rideId}" : ""}',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontFamily: 'monospace'),
+                      ),
                     ),
-                    orElse: () => const SizedBox.shrink(),
-                  ),
-                  const Spacer(),
-                  _RoundBtn(
-                    icon: Icons.notifications_none_rounded,
-                    onTap: () => context.push('/d/notifications'),
-                  ),
                 ],
               ),
             ),

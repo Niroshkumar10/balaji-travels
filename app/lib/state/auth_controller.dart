@@ -6,6 +6,7 @@ import '../core/auth/session.dart';
 import '../core/net/result.dart';
 import '../core/realtime/socket_client.dart';
 import '../core/repos/auth_repository.dart';
+import '../features/driver/driver_controller.dart';
 
 enum AuthStatus { unknown, unauthenticated, authenticated }
 
@@ -47,9 +48,11 @@ class AuthController extends StateNotifier<AuthState> {
     required Session session,
     required AuthRepository authRepo,
     required SocketClient socket,
+    required Ref ref,
   })  : _session = session,
         _authRepo = authRepo,
         _socket = socket,
+        _ref = ref,
         super(const AuthState(status: AuthStatus.unknown)) {
     _bootstrap();
   }
@@ -57,6 +60,12 @@ class AuthController extends StateNotifier<AuthState> {
   final Session _session;
   final AuthRepository _authRepo;
   final SocketClient _socket;
+  final Ref _ref;
+
+  /// Drop the driver-side controller so its keep-alive timers stop and a fresh
+  /// one binds to the new session. Without this, a phone switched from driver
+  /// to customer keeps POSTing /drivers/me/heartbeat with a customer token (403).
+  void _resetDriverSession() => _ref.invalidate(driverControllerProvider);
 
   final _statusController = StreamController<AuthStatus>.broadcast();
   Stream<AuthStatus> get statusStream => _statusController.stream;
@@ -68,6 +77,10 @@ class AuthController extends StateNotifier<AuthState> {
 
   void _bootstrap() {
     if (_session.isAuthenticated) {
+      // Always disconnect before connecting so a leftover socket from a
+      // previous identity (e.g. a customer session) can never still be the
+      // live connection when this one takes over.
+      _socket.disconnect();
       _socket.connect(_session.token!);
       _emit(AuthState(
         status: AuthStatus.authenticated,
@@ -96,6 +109,11 @@ class AuthController extends StateNotifier<AuthState> {
             name: value.user.name,
             mobile: mobile,
           );
+          _resetDriverSession();
+          // Disconnect any existing socket (e.g. a still-open customer
+          // session on this device) before connecting fresh with this login's
+          // JWT, so the old identity's connection can never linger.
+          _socket.disconnect();
           _socket.connect(value.token);
           _emit(AuthState(
             status: AuthStatus.authenticated,
@@ -119,6 +137,7 @@ class AuthController extends StateNotifier<AuthState> {
   Future<void> forceLogout() => _finishLogout();
 
   Future<void> _finishLogout() async {
+    _resetDriverSession();
     _socket.disconnect();
     await _session.clear();
     _emit(const AuthState(status: AuthStatus.unauthenticated));

@@ -114,15 +114,27 @@ async function logWhyNoDrivers(ride, radiusKm = RADIUS_KM) {
       d.radiusKm == null
         ? `  (no distance limit) ....... ${d.insideRadiusBox}`
         : `  within ${d.radiusKm} km of pickup ..... ${d.insideRadiusBox}`;
-    L.block('❌', `Ride #${ride.id} — no candidates (first 0 = the reason)`, [
+    const lines = [
+      `Requested : ${d.requestedCategory} vehicle`,
       `online .................... ${d.online}`,
       `  available ............... ${d.available}`,
       `  KYC approved ............ ${d.kycApproved}`,
       `  has a GPS row .......... ${d.hasLocationRow}`,
       `  GPS fresh (< ${d.staleSeconds}s) ...... ${d.freshLocation}`,
       distLine,
-      `  vehicle = ${d.category} ......... ${d.categoryMatch}`,
-    ]);
+      `  vehicle = ${d.requestedCategory} ......... ${d.categoryMatch}`,
+    ];
+    if (Array.isArray(d.drivers) && d.drivers.length) {
+      lines.push('', 'Online drivers — vehicle check:');
+      for (const drv of d.drivers) {
+        const veh = drv.activeVehicleId
+          ? `${drv.vehicleCategory} (vehicle #${drv.activeVehicleId})`
+          : `current_vehicle_id=${drv.currentVehicleId ?? 'NULL'} → no active/owned vehicle`;
+        const verdict = drv.categoryOk ? '✓ match' : `✗ needs ${drv.requestedCategory ?? d.requestedCategory}`;
+        lines.push(`  driver ${drv.driverId}: ${veh}   ${verdict}`);
+      }
+    }
+    L.block('❌', `Ride #${ride.id} — no candidates (first 0 = the reason)`, lines);
   } catch (err) {
     L.warnEvent('⚠️', 'diagnostic query failed', { rideId: ride.id, err: err.message });
   }
@@ -144,9 +156,25 @@ async function start(ride) {
   const customer = await customerRepo.findById(ride.customer_id);
   realtime.toUser(customer.user_id, 'ride:searching', { rideId: ride.id, status: searching.status });
 
-  const queue = await buildQueue(searching);
+  let queue = await buildQueue(searching, new Set(), RADIUS_KM);
+  let searchedRadius = RADIUS_KM;
+
+  // Nobody within the initial radius → widen to the configured expand radius
+  // (DISPATCH_EXPAND_RADIUS_KM; 0 = no distance limit) right now, rather than
+  // only after a first offer has timed out. Skip when the expand radius is the
+  // same as the initial one (e.g. DISPATCH_SEARCH_RADIUS_KM=0 already searches
+  // everyone). The vehicle-category filter still applies at every radius.
+  if (queue.length === 0 && EXPAND_RADIUS_KM !== RADIUS_KM) {
+    await logWhyNoDrivers(searching, RADIUS_KM);
+    L.event('🔄', `nothing within ${radiusLabel(RADIUS_KM)} — re-querying at ${radiusLabel(EXPAND_RADIUS_KM)}`, {
+      rideId: ride.id,
+    });
+    queue = await buildQueue(searching, new Set(), EXPAND_RADIUS_KM);
+    searchedRadius = EXPAND_RADIUS_KM;
+  }
+
   if (queue.length === 0) {
-    await logWhyNoDrivers(searching);
+    await logWhyNoDrivers(searching, searchedRadius);
     await noDrivers(ride.id);
     return;
   }
@@ -206,7 +234,10 @@ async function offerNext(rideId) {
   await rideOfferRepo.create({ rideId, driverId: cand.driverId, distanceM: cand.distanceM });
 
   const etaSec = geo.etaSeconds({ lat: cand.lat, lng: cand.lng }, { lat: Number(s.ride.pickup_lat), lng: Number(s.ride.pickup_lng) });
-  realtime.toUser(drv.user_id, 'ride:offer', {
+
+  // Emit the offer and record exactly where it went. A live socket in the
+  // driver's `user:<id>` room is what carries the popup.
+  const delivery = realtime.toUserVerbose(drv.user_id, 'ride:offer', {
     rideId,
     pickup: { lat: Number(s.ride.pickup_lat), lng: Number(s.ride.pickup_lng), addr: s.ride.pickup_addr },
     drop: { lat: Number(s.ride.drop_lat), lng: Number(s.ride.drop_lng), addr: s.ride.drop_addr },
@@ -216,6 +247,28 @@ async function offerNext(rideId) {
     vehicleCategory: s.ride.vehicle_category,
     expiresInSec: Math.round(OFFER_TIMEOUT_MS / 1000),
   });
+  const liveSockets = delivery.delivered;
+
+  if (liveSockets > 0) {
+    L.event('📨', `ride:offer delivered to ${delivery.room}`, {
+      rideId,
+      driverId: cand.driverId,
+      driverUserId: drv.user_id,
+      sockets: liveSockets,
+      socketIds: delivery.socketIds,
+    });
+  } else {
+    const snap = realtime.registrySnapshot();
+    L.warnEvent('📵', 'offered driver has NO live socket — ride:offer reached nobody', {
+      rideId,
+      driverId: cand.driverId,
+      driverUserId: drv.user_id,
+      targetRoom: delivery.room,
+      totalSocketsConnected: snap.total,
+      userRooms: snap.users.join(', ') || '(none)',
+    });
+  }
+
   notifyService.notify(drv.user_id, {
     type: 'ride_offer',
     title: 'New ride request',
@@ -227,7 +280,7 @@ async function offerNext(rideId) {
   L.block('📤', `Ride #${rideId} — offer ${s.idx + 1}/${s.queue.length}`, [
     `▶ Offering : driver ${cand.driverId}   ${km(cand.distanceM)} from pickup`,
     `  Window   : ${OFFER_TIMEOUT_MS / 1000}s to respond`,
-    `  Channel  : socket + FCM push`,
+    `  Channel  : socket (${liveSockets} live) + FCM push`,
     `⬇ Next     : ${next ? `driver ${next.driverId}  ${km(next.distanceM)}` : 'none — will re-query on exhaustion'}`,
     '',
     ...queueSnapshot(s),

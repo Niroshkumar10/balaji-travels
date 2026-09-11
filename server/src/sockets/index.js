@@ -12,6 +12,7 @@
 
 const { Server } = require('socket.io');
 const logger = require('../infra/logger');
+const L = logger.for('socket'); // → logs/socket.log
 const socketAuth = require('./socketAuth');
 const realtime = require('../realtime/emitter');
 
@@ -162,12 +163,38 @@ function initSockets(httpServer) {
   // Single-instance deployment — the default in-memory adapter is all we need.
 
   realtime.bind(io);
+
+  // Low-level transport failures — these happen BEFORE socketAuth runs, so
+  // without this a client that can't even complete the Engine.IO handshake
+  // (blocked polling POST, bad path, CORS, transport mismatch) leaves no trace.
+  io.engine.on('connection_error', (err) => {
+    L.warnEvent('🚨', 'engine connection_error (handshake never completed)', {
+      code: err.code,
+      message: err.message,
+      transport: err.context?.transport,
+      method: err.req?.method,
+      url: err.req?.url,
+    });
+  });
+
   io.use(socketAuth);
 
   io.on('connection', (socket) => {
-    const { userId, role } = socket.data;
+    const { userId, role, profileId } = socket.data;
     socket.join(`user:${userId}`);
-    logger.debug({ userId, role, sid: socket.id }, 'socket connected');
+    const room = io.sockets.adapter.rooms.get(`user:${userId}`);
+    L.event('🔌', `${role} socket CONNECTED & registered`, {
+      userId,
+      driverId: role === 'driver' ? profileId : undefined,
+      profileId,
+      room: `user:${userId}`,
+      socketsInRoom: room ? room.size : 0,
+      sid: socket.id,
+      transport: socket.conn.transport.name,
+    });
+    socket.conn.on('upgrade', (t) =>
+      L.event('⬆️', 'socket transport upgraded', { userId, sid: socket.id, transport: t.name }),
+    );
 
     // Register every event handler SYNCHRONOUSLY, before any await. A client
     // (the real app does this) emits its first event — driver:online,
@@ -181,7 +208,12 @@ function initSockets(httpServer) {
     if (role === 'driver') registerDriver(socket);
 
     socket.on('disconnect', (reason) => {
-      logger.debug({ userId, role, sid: socket.id, reason }, 'socket disconnected');
+      L.event('🔌', `${role} socket DISCONNECTED`, {
+        userId,
+        driverId: role === 'driver' ? profileId : undefined,
+        sid: socket.id,
+        reason,
+      });
     });
 
     // Now the slow part — the socket can already receive events while this runs.

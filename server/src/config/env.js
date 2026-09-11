@@ -33,7 +33,7 @@ const int = (def) =>
 const schema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    PORT: int(30008),
+    PORT: int(30009),
     API_BASE_URL: z.string().url().default('https://chat.neuralarc.com'),
 
     // 'mysql' — real MySQL/MariaDB pool (production + normal dev).
@@ -49,6 +49,11 @@ const schema = z
 
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
     JWT_ACCESS_TTL: z.string().default('30d'),
+    // Socket handshake: when true, a live socket is refused / dropped the moment
+    // its account logs in again anywhere (the REST layer always does this).
+    // Default false — a validly-signed, unexpired JWT is enough to hold the
+    // socket open, so re-logins on the same phone don't kill the connection.
+    SOCKET_STRICT_SESSION: bool(false),
     OTP_TTL_SECONDS: int(300),
     OTP_LENGTH: int(6).pipe(z.number().int().min(4).max(8)),
     // Min seconds between OTP requests for the same (mobile, role) — the

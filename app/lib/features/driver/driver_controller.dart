@@ -44,6 +44,8 @@ class DriverState {
     this.customerLng,
     this.busy = false,
     this.error,
+    this.socketState = 'unknown',
+    this.lastEvent,
   });
 
   final bool online;
@@ -54,6 +56,10 @@ class DriverState {
   final double? customerLng;
   final bool busy;
   final String? error;
+
+  /// Diagnostics only — surfaced on the dashboard while debugging realtime.
+  final String socketState;
+  final String? lastEvent;
 
   bool get onTrip => ride != null && ride!.status.isActive;
   bool get hasCustomerLocation => customerLat != null && customerLng != null;
@@ -67,6 +73,8 @@ class DriverState {
     double? customerLng,
     bool? busy,
     Object? error = _sentinel,
+    String? socketState,
+    String? lastEvent,
   }) =>
       DriverState(
         online: online ?? this.online,
@@ -77,6 +85,8 @@ class DriverState {
         customerLng: customerLng ?? this.customerLng,
         busy: busy ?? this.busy,
         error: identical(error, _sentinel) ? this.error : error as String?,
+        socketState: socketState ?? this.socketState,
+        lastEvent: lastEvent ?? this.lastEvent,
       );
 
   static const _sentinel = Object();
@@ -96,6 +106,11 @@ class DriverController extends StateNotifier<DriverState> {
         _location = location,
         super(const DriverState()) {
     _sub = _socket.events.listen(_onEvent);
+    _connSub = _socket.connState.listen((s) {
+      // ignore: avoid_print
+      print('[RT-DRIVER] socket state → $s');
+      state = state.copyWith(socketState: s.name);
+    });
     loadActive();
   }
 
@@ -105,7 +120,20 @@ class DriverController extends StateNotifier<DriverState> {
   final PaymentRepository _payments;
   final LocationService _location;
 
+  // A discrete "new offer arrived" signal, one event per ride:offer received —
+  // separate from `state.offer` on purpose. Driving the popup off a diffed
+  // state snapshot (comparing prev/next) turned out to miss offers whenever
+  // `state.offer` was left non-null from an earlier ride (e.g. its revoke
+  // arrived on a superseded socket generation and was correctly dropped as
+  // stale): the transition was "non-null -> different non-null", not
+  // "null -> non-null", so a null-check-based listener never fired again.
+  // A broadcast stream has no such edge case — every ride:offer is its own
+  // event, impossible to miss by comparing against whatever came before.
+  final _offerAlerts = StreamController<PendingOffer>.broadcast();
+  Stream<PendingOffer> get offerAlerts => _offerAlerts.stream;
+
   late final StreamSubscription<SocketEvent> _sub;
+  StreamSubscription<SocketConnState>? _connSub;
   StreamSubscription<Position>? _posSub;
   Timer? _heartbeatTimer;
   Position? _lastPos;
@@ -339,21 +367,54 @@ class DriverController extends StateNotifier<DriverState> {
   }
 
   void _onEvent(SocketEvent e) {
+    // ignore: avoid_print
+    print('[RT-DRIVER] _onEvent "${e.name}"');
+    final now = DateTime.now();
+    state = state.copyWith(
+      lastEvent: '${e.name} @ ${now.hour.toString().padLeft(2, '0')}:'
+          '${now.minute.toString().padLeft(2, '0')}:'
+          '${now.second.toString().padLeft(2, '0')}',
+    );
     final d = e.data;
+    try {
+      _handleEvent(e, d);
+    } catch (err, st) {
+      // A parse failure here would otherwise silently kill the subscription and
+      // no popup would ever show. Log it loudly instead.
+      // ignore: avoid_print
+      print('[RT-DRIVER] _onEvent "${e.name}" FAILED: $err\n$st');
+    }
+  }
+
+  void _handleEvent(SocketEvent e, Map<String, dynamic> d) {
     switch (e.name) {
       case 'ride:offer':
+        // ignore: avoid_print
+        print('[RT-DRIVER] RIDE_OFFER_RECEIVED rideId=${d['rideId']} payload=$d');
         state = state.copyWith(
           offer: PendingOffer(
-            rideId: (d['rideId'] as num).toInt(),
+            // `as num` throws outright on a String — and estFare IS one: it's
+            // a MySQL DECIMAL column, which mysql2 returns as a string (no
+            // decimalNumbers: true on the pool), and the server sends it
+            // through unconverted. That threw here on every single offer,
+            // silently caught by the try/catch below, so state.offer was
+            // never set and the popup never fired — the ride still reached
+            // the Notifications list because that's a separate code path.
+            // asInt/asDouble (json.dart) already exist in this codebase
+            // specifically for "backend returns numbers as strings" fields.
+            rideId: asInt(d['rideId']),
             pickup: LatLngPoint.fromJson(_map(d['pickup'])),
             drop: LatLngPoint.fromJson(_map(d['drop'])),
-            distanceToPickupM: (d['distanceToPickupM'] as num?)?.toInt() ?? 0,
-            tripDistanceM: (d['tripDistanceM'] as num?)?.toInt() ?? 0,
-            estFare: (d['estFare'] as num?)?.toDouble() ?? 0,
+            distanceToPickupM: asInt(d['distanceToPickupM']),
+            tripDistanceM: asInt(d['tripDistanceM']),
+            estFare: asDouble(d['estFare']),
             vehicleCategory: d['vehicleCategory']?.toString() ?? 'hatchback',
-            expiresInSec: (d['expiresInSec'] as num?)?.toInt() ?? 20,
+            expiresInSec: asInt(d['expiresInSec'], 20),
           ),
         );
+        // ignore: avoid_print
+        print('[RT-DRIVER] state.offer set → rideId=${state.offer?.rideId}');
+        _offerAlerts.add(state.offer!);
       case 'ride:offer_revoked':
         if (state.offer?.rideId == (d['rideId'] as num?)?.toInt()) {
           state = state.copyWith(offer: null);
@@ -382,6 +443,8 @@ class DriverController extends StateNotifier<DriverState> {
   @override
   void dispose() {
     _sub.cancel();
+    _connSub?.cancel();
+    _offerAlerts.close();
     _stopLocationStream();
     super.dispose();
   }

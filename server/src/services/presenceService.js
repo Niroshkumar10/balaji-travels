@@ -24,16 +24,38 @@ const presenceService = {
     if (driver.kyc_status !== 'approved') {
       throw ApiError.forbidden('KYC not approved — cannot go online', 'KYC_NOT_APPROVED');
     }
-    const vehicles = await vehicleRepo.listByDriver(driverId);
-    if (!vehicles.some((v) => v.is_active)) {
-      throw ApiError.badRequest('Add an active vehicle before going online', 'NO_ACTIVE_VEHICLE');
+    const vehicles = await vehicleRepo.listByDriver(driverId); // not deleted, id DESC
+    if (vehicles.length === 0) {
+      throw ApiError.badRequest('Add a vehicle before going online', 'NO_ACTIVE_VEHICLE');
     }
+
+    // Dispatch takes the driver's category from the vehicle that
+    // rt_drivers.current_vehicle_id points at — and only when that vehicle is
+    // active, not soft-deleted, and owned by this driver. Reconcile that pairing
+    // before entering the pool: keep the driver's chosen current vehicle if it's
+    // still valid, otherwise fall back to the most recently added one, and make
+    // it the sole active vehicle. Prevents "online but never matched".
+    const chosen =
+      vehicles.find((v) => v.id === driver.current_vehicle_id) ?? vehicles[0];
+    const pairingOk =
+      driver.current_vehicle_id === chosen.id &&
+      !!chosen.is_active &&
+      !vehicles.some((v) => v.is_active && v.id !== chosen.id);
+
     if (driver.availability === 'on_trip') {
       // already mid-trip — just refresh location, stay on_trip
       await driverLocationRepo.upsert(driverId, { lat, lng });
       return { availability: 'on_trip' };
     }
     await db.withTransaction(async (tx) => {
+      if (!pairingOk) {
+        await vehicleRepo.setActiveForDriver(driverId, chosen.id, tx);
+        L.event('🚗', 'reconciled current vehicle on go-online', {
+          driverId,
+          vehicleId: chosen.id,
+          category: chosen.category,
+        });
+      }
       await driverRepo.setPresence(driverId, { isOnline: true, availability: 'available' }, tx);
       await driverLocationRepo.upsert(driverId, { lat, lng }, tx);
     });

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -22,13 +24,37 @@ class DriverShell extends ConsumerStatefulWidget {
 
 class _DriverShellState extends ConsumerState<DriverShell> {
   late int _tab = widget.initialTab;
+  StreamSubscription<PendingOffer>? _offerSub;
+  int? _lastShownOfferId;
+
+  @override
+  void initState() {
+    super.initState();
+    // Listen to the discrete offer-alert stream directly, not a diffed state
+    // snapshot — every ride:offer is its own event here, so there is no
+    // before/after comparison that can miss one (see DriverController for
+    // why the old diff-based trigger did). Subscribed once for the shell's
+    // whole lifetime, so it keeps firing regardless of which tab is showing
+    // or whether the offer screen itself is pushed on top.
+    _offerSub = ref.read(driverControllerProvider.notifier).offerAlerts.listen((offer) {
+      if (offer.rideId == _lastShownOfferId) return; // same ride re-announced — don't double-push
+      _lastShownOfferId = offer.rideId;
+      if (!mounted) return;
+      // ignore: avoid_print
+      print('[RT-DRIVER] navigating to offer popup /d/offer/${offer.rideId}');
+      context.push('/d/offer/${offer.rideId}');
+    });
+  }
+
+  @override
+  void dispose() {
+    _offerSub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     ref.listen(driverControllerProvider, (prev, next) {
-      if (next.offer != null && prev?.offer == null) {
-        context.push('/d/offer/${next.offer!.rideId}');
-      }
       if (next.ride != null &&
           next.ride!.status.isActive &&
           prev?.ride?.id != next.ride!.id) {
