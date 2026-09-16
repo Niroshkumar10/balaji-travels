@@ -5,8 +5,27 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/auth/session.dart';
 import '../core/net/result.dart';
 import '../core/realtime/socket_client.dart';
+import '../core/realtime/socket_diagnostics.dart';
 import '../core/repos/auth_repository.dart';
 import '../features/driver/driver_controller.dart';
+
+/// Local-only identity note for the diagnostics panel. This is what the APP
+/// believes it is about to authenticate as (from the just-issued JWT claims
+/// mirrored into Session) — NOT a confirmation from the server. The server
+/// never sends the client an explicit "you are now in room user:<id>"
+/// acknowledgement; room membership is assigned during the socket handshake
+/// (see server/src/sockets/socketAuth.js) and only ever visible in the
+/// SERVER's own logs. Never logs the token itself.
+void _logAuthIdentity(String label, {required AppRole role, required int userId, int? profileId}) {
+  SocketDiagLog.instance.add(
+    'AUTH USER ID (local session, $label): userId=$userId role=${role.name}'
+    '${profileId != null ? ' profileId(driverId if driver)=$profileId' : ''}',
+  );
+  SocketDiagLog.instance.add(
+    'ROOM (expected, not server-confirmed): user:$userId — the app never '
+    'receives an explicit join-room ack; this is only what SHOULD happen.',
+  );
+}
 
 enum AuthStatus { unknown, unauthenticated, authenticated }
 
@@ -81,7 +100,10 @@ class AuthController extends StateNotifier<AuthState> {
       // previous identity (e.g. a customer session) can never still be the
       // live connection when this one takes over.
       _socket.disconnect();
-      _socket.connect(_session.token!);
+      if (_session.role != null && _session.userId != null) {
+        _logAuthIdentity('bootstrap', role: _session.role!, userId: _session.userId!, profileId: _session.profileId);
+      }
+      _socket.connect(_session.token!, userId: _session.userId, role: _session.role?.name);
       _emit(AuthState(
         status: AuthStatus.authenticated,
         role: _session.role,
@@ -114,7 +136,8 @@ class AuthController extends StateNotifier<AuthState> {
           // session on this device) before connecting fresh with this login's
           // JWT, so the old identity's connection can never linger.
           _socket.disconnect();
-          _socket.connect(value.token);
+          _logAuthIdentity('verifyOtp', role: role, userId: value.user.id, profileId: value.profileId);
+          _socket.connect(value.token, userId: value.user.id, role: role.name);
           _emit(AuthState(
             status: AuthStatus.authenticated,
             role: role,

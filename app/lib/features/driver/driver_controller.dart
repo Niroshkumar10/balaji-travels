@@ -7,10 +7,20 @@ import '../../core/location/location_service.dart';
 import '../../core/models/models.dart';
 import '../../core/net/result.dart';
 import '../../core/realtime/socket_client.dart';
+import '../../core/realtime/socket_diagnostics.dart';
 import '../../core/repos/payment_repository.dart';
 import '../../core/repos/profile_repository.dart';
 import '../../core/repos/ride_repository.dart';
 import '../../state/providers.dart';
+
+// Same existing [RT-DRIVER] print() calls, now also mirrored into the
+// in-memory diagnostics buffer the temporary on-device panel reads — one
+// call site, both destinations, nothing new to keep in sync.
+void _dlog(String msg) {
+  // ignore: avoid_print
+  print('[RT-DRIVER] $msg');
+  SocketDiagLog.instance.add(msg);
+}
 
 class PendingOffer {
   const PendingOffer({
@@ -123,8 +133,7 @@ class DriverController extends StateNotifier<DriverState> {
         super(const DriverState()) {
     _sub = _socket.events.listen(_onEvent);
     _connSub = _socket.connState.listen((s) {
-      // ignore: avoid_print
-      print('[RT-DRIVER] socket state → $s');
+      _dlog('socket state → $s');
       state = state.copyWith(socketState: s.name);
     });
     loadActive();
@@ -175,12 +184,19 @@ class DriverController extends StateNotifier<DriverState> {
       return 'Could not get your location';
     }
     _lastPos = pos;
+    // Make sure the socket is actually up before relying on it to carry ride
+    // offers — a driver can look "online" in the DB via the REST fallback
+    // below while the socket sits disconnected indefinitely otherwise.
+    _socket.ensureConnected();
+    _dlog('ONLINE EVENT: sending driver:online (socket state=${_socket.state})');
     final ack = await _socket.emitAck('driver:online', {
       'lat': pos.latitude,
       'lng': pos.longitude,
     });
+    _dlog('ONLINE EVENT: socket ack=${ack['ok']}${ack['ok'] != true ? ' (${ack['error'] ?? ack['message']})' : ''}');
     if (ack['ok'] != true) {
       // REST fallback
+      _dlog('ONLINE EVENT: falling back to REST /drivers/me/online');
       final res = await _profiles.goOnline(lat: pos.latitude, lng: pos.longitude);
       final err = res.when(ok: (_) => null, err: (e) => e.message);
       if (err != null) {
@@ -195,7 +211,9 @@ class DriverController extends StateNotifier<DriverState> {
 
   Future<String?> goOffline() async {
     state = state.copyWith(busy: true);
+    _dlog('OFFLINE EVENT: sending driver:offline (socket state=${_socket.state})');
     final ack = await _socket.emitAck('driver:offline', {});
+    _dlog('OFFLINE EVENT: socket ack=${ack['ok']}${ack['ok'] != true ? ' (${ack['error'] ?? ack['message']})' : ''}');
     if (ack['ok'] != true) {
       final res = await _profiles.goOffline();
       final err = res.when(ok: (_) => null, err: (e) => e.message);
@@ -227,9 +245,15 @@ class DriverController extends StateNotifier<DriverState> {
 
     // Movement-based pings stop the moment the driver stands still; this timer
     // keeps the presence fresh so dispatch (and the offline sweep) keep them in.
+    // It also doubles as the socket's self-healing check: as long as the
+    // driver is online or on a trip — which spans login → online → completing
+    // a ride → back on the dashboard, still online — this tick fires every
+    // 20s and quietly reconnects the socket if it's ever found down, instead
+    // of silently staying disconnected until something else notices.
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(_heartbeatEvery, (_) async {
       if (!state.online && !state.onTrip) return;
+      _socket.ensureConnected();
       final pos = await _location.current() ?? _lastPos;
       if (pos == null) return;
       _lastPos = pos;
@@ -398,8 +422,7 @@ class DriverController extends StateNotifier<DriverState> {
   }
 
   void _onEvent(SocketEvent e) {
-    // ignore: avoid_print
-    print('[RT-DRIVER] _onEvent "${e.name}"');
+    _dlog('_onEvent "${e.name}"');
     final now = DateTime.now();
     state = state.copyWith(
       lastEvent: '${e.name} @ ${now.hour.toString().padLeft(2, '0')}:'
@@ -409,19 +432,17 @@ class DriverController extends StateNotifier<DriverState> {
     final d = e.data;
     try {
       _handleEvent(e, d);
-    } catch (err, st) {
+    } catch (err) {
       // A parse failure here would otherwise silently kill the subscription and
       // no popup would ever show. Log it loudly instead.
-      // ignore: avoid_print
-      print('[RT-DRIVER] _onEvent "${e.name}" FAILED: $err\n$st');
+      _dlog('_onEvent "${e.name}" FAILED (exception): $err');
     }
   }
 
   void _handleEvent(SocketEvent e, Map<String, dynamic> d) {
     switch (e.name) {
       case 'ride:offer':
-        // ignore: avoid_print
-        print('[RT-DRIVER] RIDE_OFFER_RECEIVED rideId=${d['rideId']} payload=$d');
+        _dlog('RIDE OFFER: received (rideId=${d['rideId']})');
         state = state.copyWith(
           offer: PendingOffer(
             // `as num` throws outright on a String — and estFare IS one: it's
@@ -443,8 +464,7 @@ class DriverController extends StateNotifier<DriverState> {
             expiresInSec: asInt(d['expiresInSec'], 20),
           ),
         );
-        // ignore: avoid_print
-        print('[RT-DRIVER] state.offer set → rideId=${state.offer?.rideId}');
+        _dlog('state.offer set → rideId=${state.offer?.rideId}');
         _offerAlerts.add(state.offer!);
       case 'ride:offer_revoked':
         if (state.offer?.rideId == (d['rideId'] as num?)?.toInt()) {

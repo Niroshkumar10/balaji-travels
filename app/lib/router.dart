@@ -25,6 +25,7 @@ import 'features/customer/wallet/wallet_screen.dart';
 import 'features/driver/driver_shell.dart';
 import 'features/driver/earnings/wallet_screen.dart';
 import 'features/driver/notifications/driver_notifications_screen.dart';
+import 'features/driver/diagnostics/socket_diagnostics_screen.dart';
 import 'features/driver/offer/ride_offer_screen.dart';
 import 'features/driver/profile/driver_safety_help_screen.dart';
 import 'features/driver/rating/driver_rating_screen.dart';
@@ -173,6 +174,12 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/d/history', builder: (_, __) => const DriverShell(initialTab: 2)),
       GoRoute(path: '/d/profile', builder: (_, __) => const DriverShell(initialTab: 3)),
       GoRoute(
+        // A plain, opaque, builder-based route — the confirmed-working way to
+        // present this screen. An earlier attempt at a Microlab-style dimmed
+        // overlay (pageBuilder + CustomTransitionPage(opaque: false)) made the
+        // popup stop appearing entirely, so it was reverted; the offer-stream
+        // trigger in DriverController/DriverShell that pushes this route was
+        // never the problem and was never touched.
         path: '/d/offer/:id',
         builder: (_, s) => RideOfferScreen(rideId: int.parse(s.pathParameters['id']!)),
       ),
@@ -182,6 +189,9 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(path: '/d/wallet', builder: (_, __) => const WalletScreen()),
       GoRoute(path: '/d/notifications', builder: (_, __) => const DriverNotificationsScreen()),
+      // TEMPORARY diagnostic screen for the driver-side Socket.IO investigation —
+      // remove this route along with SocketDiagnosticsScreen once resolved.
+      GoRoute(path: '/d/diagnostics', builder: (_, __) => const SocketDiagnosticsScreen()),
       GoRoute(path: '/d/safety', builder: (_, __) => const DriverSafetyHelpScreen()),
       GoRoute(
         path: '/d/rate/:id',

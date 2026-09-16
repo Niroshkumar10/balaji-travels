@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/realtime/socket_diagnostics.dart';
 import '../../core/widgets/common_widgets.dart';
+import '../../state/providers.dart';
 import 'dashboard/driver_dashboard_screen.dart';
 import 'driver_controller.dart';
 import 'earnings/earnings_screen.dart';
@@ -34,7 +36,7 @@ class DriverShell extends ConsumerStatefulWidget {
   ConsumerState<DriverShell> createState() => _DriverShellState();
 }
 
-class _DriverShellState extends ConsumerState<DriverShell> {
+class _DriverShellState extends ConsumerState<DriverShell> with WidgetsBindingObserver {
   late int _tab = widget.initialTab;
   StreamSubscription<PendingOffer>? _offerSub;
   int? _lastShownOfferId;
@@ -42,6 +44,7 @@ class _DriverShellState extends ConsumerState<DriverShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Listen to the discrete offer-alert stream directly, not a diffed state
     // snapshot — every ride:offer is its own event here, so there is no
     // before/after comparison that can miss one (see DriverController for
@@ -52,16 +55,29 @@ class _DriverShellState extends ConsumerState<DriverShell> {
       if (offer.rideId == _lastShownOfferId) return; // same ride re-announced — don't double-push
       _lastShownOfferId = offer.rideId;
       if (!mounted) return;
-      // ignore: avoid_print
-      print('[RT-DRIVER] navigating to offer popup /d/offer/${offer.rideId}');
+      SocketDiagLog.instance.add('navigating to offer popup /d/offer/${offer.rideId}');
       context.push('/d/offer/${offer.rideId}');
     });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _offerSub?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Android can pause the socket's own reconnect timer while backgrounded —
+    // the moment the driver app is foregrounded again (opened from recents,
+    // screen unlocked back into it, a call/notification dismissed), force a
+    // reconnect check immediately rather than waiting for socket.io's own
+    // backoff to eventually fire.
+    if (state == AppLifecycleState.resumed) {
+      SocketDiagLog.instance.add('app resumed — ensuring socket connection');
+      ref.read(socketClientProvider).ensureConnected();
+    }
   }
 
   @override

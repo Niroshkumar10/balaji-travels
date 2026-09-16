@@ -3,14 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
-import '../../../core/config/app_config.dart';
 import '../../../core/location/location_providers.dart';
-import '../../../core/realtime/socket_client.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/util/formatters.dart';
 import '../../../core/widgets/common_widgets.dart';
 import '../../../core/widgets/map_view.dart';
-import '../../../state/providers.dart';
 import '../driver_controller.dart';
 import '../earnings/earnings_controller.dart';
 
@@ -43,7 +40,6 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
   Widget build(BuildContext context) {
     final state = ref.watch(driverControllerProvider);
     final earnings = ref.watch(todayEarningsProvider);
-    final session = ref.watch(sessionProvider);
     final onTrip = state.ride != null && state.ride!.status.isActive;
 
     ref.listen(positionStreamProvider, (prev, next) {
@@ -67,6 +63,14 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
                 children: [
                   const Text('Sri Balaji Travels', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w800, fontSize: 18)),
                   const Spacer(),
+                  // TEMPORARY: opens the in-app Socket.IO diagnostic log
+                  // viewer (no ADB needed). Remove once the driver-side
+                  // socket-connection investigation is closed out.
+                  IconButton(
+                    icon: const Icon(Icons.bug_report_outlined),
+                    tooltip: 'Socket diagnostics',
+                    onPressed: () => context.push('/d/diagnostics'),
+                  ),
                   IconButton(
                     icon: const Icon(Icons.notifications_none_rounded),
                     onPressed: () => context.push('/d/notifications'),
@@ -75,19 +79,6 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
                 ],
               ),
             ),
-            if (AppConfig.isDev)
-              Container(
-                width: double.infinity,
-                color: Colors.black.withValues(alpha: 0.72),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                child: Text(
-                  'build: $socketClientBuildMarker\n'
-                  'session: role=${session.role?.name} userId=${session.userId} mobile=${session.mobile}\n'
-                  'socket: ${state.socketState}   ·   last event: ${state.lastEvent ?? "(none)"}'
-                  '${state.offer != null ? "   ·   OFFER #${state.offer!.rideId}" : ""}',
-                  style: const TextStyle(color: Colors.white, fontSize: 11, fontFamily: 'monospace'),
-                ),
-              ),
             Expanded(
               child: Stack(
                 fit: StackFit.expand,

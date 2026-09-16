@@ -77,6 +77,21 @@ class _State extends ConsumerState<DriverRideScreen> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
+    return PopScope(
+      // Accepting an offer reaches this screen via context.go('/d/ride/:id'),
+      // which REPLACES navigation history — there is nothing left for the
+      // system back button/gesture to pop to, so without this it either does
+      // nothing or exits the app, and the in-app arrow becomes the only way
+      // out. Route the hardware back the same place the arrow does.
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) context.go('/d/dashboard');
+      },
+      child: _buildScaffold(context, state, ride),
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context, DriverState state, Ride ride) {
     final s = ride.status;
     final toPickup = s == RideStatus.driverAssigned ||
         s == RideStatus.driverArriving ||
@@ -234,10 +249,33 @@ class _Panel extends StatelessWidget {
         top: false,
         child: Padding(
           padding: const EdgeInsets.all(20),
-          child: LoadingOverlay(busy: busy, child: _body(context)),
+          child: LoadingOverlay(busy: busy, child: _safeBody(context)),
         ),
       ),
     );
+  }
+
+  /// A bad value for this specific ride (a malformed fare breakdown, an
+  /// unexpected field) must never take down the whole panel and leave the
+  /// driver looking at a bare map with no way to act — show the ride's status
+  /// and a manual way back instead of nothing.
+  Widget _safeBody(BuildContext context) {
+    try {
+      return _body(context);
+    } catch (err, st) {
+      // ignore: avoid_print
+      print('[RT-DRIVER] ride panel FAILED for status ${ride.status}: $err\n$st');
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.error_outline_rounded, color: AppColors.error, size: 32),
+          const SizedBox(height: 8),
+          Text(ride.status.label),
+          const SizedBox(height: 12),
+          PrimaryButton(label: 'Back to dashboard', onPressed: onDone),
+        ],
+      );
+    }
   }
 
   Widget _body(BuildContext context) {

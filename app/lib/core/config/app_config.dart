@@ -17,13 +17,13 @@ class AppConfig {
   static const String apiBaseUrl = String.fromEnvironment(
     'RT_API_BASE_URL',
     // defaultValue: 'http://localhost:4000',
-    defaultValue: 'https://chat.neuralarc.com',
+    defaultValue: 'https://appu.neuralarc.com',
   );
 
   static const String socketUrl = String.fromEnvironment(
     'RT_SOCKET_URL',
     // defaultValue: 'http://localhost:4000',
-    defaultValue: 'https://chat.neuralarc.com',
+    defaultValue: 'https://appu.neuralarc.com',
   );
 
   /// Only needed if the app calls Google Places directly. The default path

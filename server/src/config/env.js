@@ -33,8 +33,8 @@ const int = (def) =>
 const schema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    PORT: int(30009),
-    API_BASE_URL: z.string().url().default('https://chat.neuralarc.com'),
+    PORT: int(30014),
+    API_BASE_URL: z.string().url().default('https://appu.neuralarc.com'),
 
     // 'mysql' — real MySQL/MariaDB pool (production + normal dev).
     // 'memory' — in-process store, NO database. Dev/demo/tests only: lets the

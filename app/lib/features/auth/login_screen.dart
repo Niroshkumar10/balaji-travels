@@ -102,23 +102,45 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 style: const TextStyle(color: AppColors.inkSoft),
               ),
               const SizedBox(height: 32),
+              const Padding(
+                padding: EdgeInsets.only(left: 4, bottom: 8),
+                child: Text(
+                  'Mobile number',
+                  style: TextStyle(color: AppColors.inkSoft, fontSize: 13, fontWeight: FontWeight.w500),
+                ),
+              ),
               Container(
-                height: 56,
+                height: 64,
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(16),
                   border: Border.all(
-                    color: _focus.hasFocus ? AppColors.primary : AppColors.inputBorder,
-                    width: _focus.hasFocus ? 1.6 : 1,
+                    color: AppColors.primary,
+                    width: 2,
                   ),
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Row(
                   children: [
-                    const Text('🇮🇳', style: TextStyle(fontSize: 18)),
-                    const SizedBox(width: 8),
-                    const Text('+91', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15.5)),
-                    const SizedBox(width: 12),
+                    Container(
+                      width: 64,
+                      decoration: const BoxDecoration(
+                        color: AppColors.canvas,
+                        borderRadius: BorderRadius.only(
+                          topLeft: Radius.circular(14),
+                          bottomLeft: Radius.circular(14),
+                        ),
+                      ),
+                      child: const Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text('🇮🇳', style: TextStyle(fontSize: 16)),
+                          SizedBox(height: 2),
+                          Text('+91', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5)),
+                        ],
+                      ),
+                    ),
+                    Container(width: 1, height: 32, color: AppColors.inputBorder),
+                    const SizedBox(width: 14),
                     Expanded(
                       child: TextField(
                         controller: _ctrl,
@@ -128,16 +150,29 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         autofocus: true,
                         onChanged: (_) => setState(() {}),
                         inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                        style: const TextStyle(fontSize: 15.5),
+                        style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w500),
                         decoration: const InputDecoration(
                           border: InputBorder.none,
                           isCollapsed: true,
                           counterText: '',
                           hintText: 'Enter phone number',
-                          hintStyle: TextStyle(color: AppColors.inkSoft),
+                          hintStyle: TextStyle(color: AppColors.inkSoft, fontWeight: FontWeight.w400, fontSize: 17),
                         ),
                       ),
                     ),
+                    if (_valid)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 16),
+                        child: Container(
+                          width: 26,
+                          height: 26,
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: AppColors.primary,
+                          ),
+                          child: const Icon(Icons.check_rounded, size: 17, color: Colors.white),
+                        ),
+                      ),
                   ],
                 ),
               ),
