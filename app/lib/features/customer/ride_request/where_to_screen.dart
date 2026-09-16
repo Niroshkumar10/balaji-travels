@@ -65,12 +65,34 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
   final Set<String> _favoriting = {};
   final Set<String> _favorited = {};
 
+  // "Where to?" and "Pickup location" are both real inline text fields on
+  // this same page (no modal, no separate screen) — typing in either runs
+  // the same debounced autocomplete search PlaceSearchSheet used to run in a
+  // popup, and results replace the Recent/Suggestions rows below until the
+  // active field is cleared again.
+  final _dropCtrl = TextEditingController();
+  final _dropFocus = FocusNode();
+  final _dropDebouncer = Debouncer();
+  List<PlacePrediction> _dropResults = [];
+  bool _dropSearching = false;
+  bool _dropServiceDown = false;
+
+  final _pickupCtrl = TextEditingController();
+  final _pickupFocus = FocusNode();
+  final _pickupDebouncer = Debouncer();
+  List<PlacePrediction> _pickupResults = [];
+  bool _pickupSearching = false;
+  bool _pickupServiceDown = false;
+
   bool _busy = false;
 
   @override
   void initState() {
     super.initState();
     _drop = widget.args?.initialDrop;
+    _dropCtrl.text = _drop?.addr ?? '';
+    _pickupFocus.addListener(() => setState(() {}));
+    _dropFocus.addListener(() => setState(() {}));
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _prefillPickup();
       if (widget.args?.openLaterSheet == true && mounted) _pickWhen();
@@ -88,13 +110,127 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
   }
 
   Future<void> _setDrop(LatLngPoint point) async {
-    setState(() => _drop = point);
+    setState(() {
+      _drop = point;
+      _dropCtrl.text = point.addr ?? '';
+      _dropResults = [];
+      _dropServiceDown = false;
+    });
+    _dropFocus.unfocus();
     RecentSearchStore.add(point);
+  }
+
+  /// Live autocomplete for the inline "Where to?" field — mirrors
+  /// PlaceSearchSheet's search, just rendered in this same page instead of a
+  /// modal, so results (or the Recent/Suggestions rows for an empty query)
+  /// always sit directly below the field.
+  void _searchDrop(String q) {
+    if (q.trim().length < 3) {
+      setState(() {
+        _dropResults = [];
+        _dropSearching = false;
+        _dropServiceDown = false;
+      });
+      return;
+    }
+    setState(() => _dropSearching = true);
+    _dropDebouncer.run(() async {
+      final res = await ref.read(miscRepoProvider).autocomplete(q, lat: _pickup?.lat, lng: _pickup?.lng);
+      if (!mounted) return;
+      final all = res.valueOrNull ?? const <PlacePrediction>[];
+      final usable = all.where((p) => (p.placeId ?? '').isNotEmpty).toList();
+      setState(() {
+        _dropSearching = false;
+        _dropResults = usable;
+        _dropServiceDown = all.isNotEmpty && usable.isEmpty;
+      });
+    });
+  }
+
+  Future<void> _chooseDropResult(PlacePrediction p) async {
+    final id = p.placeId;
+    if (id == null || id.isEmpty) {
+      showError(context, 'Place search is unavailable right now. Try again shortly.');
+      return;
+    }
+    final res = await ref.read(miscRepoProvider).placeDetails(id);
+    if (!mounted) return;
+    res.when(
+      ok: (loc) {
+        if (!MapView.isRealLatLng(loc.lat, loc.lng)) {
+          showError(context, "Couldn't locate that place. Pick another result.");
+          return;
+        }
+        _setDrop(LatLngPoint(lat: loc.lat, lng: loc.lng, addr: loc.addr ?? p.description));
+      },
+      err: (e) => showError(context, e.message),
+    );
+  }
+
+  void _setPickup(LatLngPoint point) {
+    setState(() {
+      _pickup = point;
+      _pickupCtrl.text = point.addr ?? '';
+      _pickupResults = [];
+      _pickupServiceDown = false;
+    });
+    _pickupFocus.unfocus();
+  }
+
+  /// Live autocomplete for the inline "Pickup location" field — same
+  /// approach as [_searchDrop], just writing into the pickup-side state.
+  void _searchPickup(String q) {
+    if (q.trim().length < 3) {
+      setState(() {
+        _pickupResults = [];
+        _pickupSearching = false;
+        _pickupServiceDown = false;
+      });
+      return;
+    }
+    setState(() => _pickupSearching = true);
+    _pickupDebouncer.run(() async {
+      final res = await ref.read(miscRepoProvider).autocomplete(q, lat: _pickup?.lat, lng: _pickup?.lng);
+      if (!mounted) return;
+      final all = res.valueOrNull ?? const <PlacePrediction>[];
+      final usable = all.where((p) => (p.placeId ?? '').isNotEmpty).toList();
+      setState(() {
+        _pickupSearching = false;
+        _pickupResults = usable;
+        _pickupServiceDown = all.isNotEmpty && usable.isEmpty;
+      });
+    });
+  }
+
+  Future<void> _choosePickupResult(PlacePrediction p) async {
+    final id = p.placeId;
+    if (id == null || id.isEmpty) {
+      showError(context, 'Place search is unavailable right now. Try again shortly.');
+      return;
+    }
+    final res = await ref.read(miscRepoProvider).placeDetails(id);
+    if (!mounted) return;
+    res.when(
+      ok: (loc) {
+        if (!MapView.isRealLatLng(loc.lat, loc.lng)) {
+          showError(context, "Couldn't locate that place. Pick another result.");
+          return;
+        }
+        _setPickup(LatLngPoint(lat: loc.lat, lng: loc.lng, addr: loc.addr ?? p.description));
+      },
+      err: (e) => showError(context, e.message),
+    );
   }
 
   @override
   void dispose() {
     _promoCtrl.dispose();
+    _dropCtrl.dispose();
+    _dropFocus.dispose();
+    _dropDebouncer.dispose();
+    _pickupCtrl.dispose();
+    _pickupFocus.dispose();
+    _pickupDebouncer.dispose();
     super.dispose();
   }
 
@@ -105,10 +241,14 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
         .read(miscRepoProvider)
         .reverseGeocode(pos.latitude, pos.longitude);
     rev.when(
-      ok: (p) => setState(() => _pickup = p),
-      err: (_) => setState(
-        () => _pickup = LatLngPoint(lat: pos.latitude, lng: pos.longitude, addr: 'Current location'),
-      ),
+      ok: (p) => setState(() {
+        _pickup = p;
+        _pickupCtrl.text = p.addr ?? '';
+      }),
+      err: (_) => setState(() {
+        _pickup = LatLngPoint(lat: pos.latitude, lng: pos.longitude, addr: 'Current location');
+        _pickupCtrl.text = _pickup!.addr ?? '';
+      }),
     );
   }
 
@@ -123,7 +263,7 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
     );
     if (picked == null) return;
     if (forPickup) {
-      setState(() => _pickup = picked);
+      _setPickup(picked);
     } else {
       await _setDrop(picked);
     }
@@ -329,7 +469,13 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
       final p = _pickup;
       _pickup = _drop;
       _drop = p;
+      _pickupCtrl.text = _pickup?.addr ?? '';
+      _dropCtrl.text = _drop?.addr ?? '';
+      _pickupResults = [];
+      _dropResults = [];
     });
+    _pickupFocus.unfocus();
+    _dropFocus.unfocus();
   }
 
   /// For Rental (no distance-based fare engine): capture the lead — pickup
@@ -472,8 +618,42 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
 
   Widget _locationsStep() {
     final vehicle = widget.args?.vehicleLabel;
+    return Column(
+      children: [
+        Expanded(child: _locationsScroll(vehicle)),
+        // "See fares" (and Rental's "Continue without Drop") stay fixed here
+        // instead of scrolling with the Recent/Suggestions list below them —
+        // otherwise a long Recent-searches list pushes them off-screen and
+        // the rider has to scroll to find them.
+        SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            child: Column(
+              children: [
+                PrimaryButton(
+                  label: 'See fares',
+                  onPressed: _placesReady ? _loadFares : null,
+                ),
+                if (vehicle != null) ...[
+                  const SizedBox(height: 10),
+                  OutlinedButton(
+                    onPressed: _pickup != null ? _continueWithoutDrop : null,
+                    style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(52)),
+                    child: const Text('Continue Without Drop'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _locationsScroll(String? vehicle) {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
       children: [
         Row(
           children: [
@@ -525,22 +705,96 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
               Expanded(
                 child: Column(
                   children: [
-                    _LocationField(
-                      icon: Icons.trip_origin,
-                      iconColor: AppColors.brand,
-                      hint: 'Pickup location',
-                      value: _pickup?.addr,
-                      onTap: () => _pickPlace(forPickup: true),
-                      bordered: false,
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.trip_origin, color: AppColors.brand, size: 14),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextField(
+                              controller: _pickupCtrl,
+                              focusNode: _pickupFocus,
+                              onChanged: _searchPickup,
+                              // The default "tap outside unfocuses" behaviour
+                              // fires on pointer-DOWN, before a tap on a
+                              // result row below finishes — that rebuilds
+                              // (and, since this list is gated on focus,
+                              // hides) the row out from under the tap before
+                              // its onTap fires. We unfocus ourselves, only
+                              // once a result is actually chosen (see
+                              // _setPickup), so the tap always lands.
+                              onTapOutside: (_) {},
+                              style: const TextStyle(fontSize: 15),
+                              decoration: const InputDecoration(
+                                filled: false,
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                isCollapsed: true,
+                                hintText: 'Pickup location',
+                                hintStyle: TextStyle(color: AppColors.inkSoft, fontSize: 15),
+                              ),
+                            ),
+                          ),
+                          if (_pickupSearching)
+                            const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                          else if (_pickupCtrl.text.isNotEmpty)
+                            InkWell(
+                              onTap: () => setState(() {
+                                _pickupCtrl.clear();
+                                _pickup = null;
+                                _pickupResults = [];
+                                _pickupServiceDown = false;
+                                _pickupFocus.unfocus();
+                              }),
+                              child: const Icon(Icons.close_rounded, size: 18, color: AppColors.inkSoft),
+                            ),
+                        ],
+                      ),
                     ),
                     const Divider(height: 1, indent: 46),
-                    _LocationField(
-                      icon: Icons.square_rounded,
-                      iconColor: AppColors.danger,
-                      hint: 'Where to?',
-                      value: _drop?.addr,
-                      onTap: () => _pickPlace(forPickup: false),
-                      bordered: false,
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.square_rounded, color: AppColors.danger, size: 14),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextField(
+                              controller: _dropCtrl,
+                              focusNode: _dropFocus,
+                              onChanged: _searchDrop,
+                              // See the matching comment on the pickup field
+                              // above — same fix, same reason.
+                              onTapOutside: (_) {},
+                              style: const TextStyle(fontSize: 15),
+                              decoration: const InputDecoration(
+                                filled: false,
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                isCollapsed: true,
+                                hintText: 'Where to?',
+                                hintStyle: TextStyle(color: AppColors.inkSoft, fontSize: 15),
+                              ),
+                            ),
+                          ),
+                          if (_dropSearching)
+                            const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                          else if (_dropCtrl.text.isNotEmpty)
+                            InkWell(
+                              onTap: () => setState(() {
+                                _dropCtrl.clear();
+                                _drop = null;
+                                _dropResults = [];
+                                _dropServiceDown = false;
+                                _dropFocus.unfocus();
+                              }),
+                              child: const Icon(Icons.close_rounded, size: 18, color: AppColors.inkSoft),
+                            ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -552,53 +806,94 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
             ],
           ),
         ),
-        const SizedBox(height: 20),
-        _PlanRow(icon: Icons.star_border_rounded, label: 'Saved places', onTap: _pickSavedPlace),
-        const Divider(height: 1),
-        _PlanRow(
-          icon: Icons.public_rounded,
-          label: 'Search in a different city',
-          onTap: () => _pickPlace(forPickup: false),
-        ),
-        const Divider(height: 1),
-        _PlanRow(icon: Icons.push_pin_outlined, label: 'Select on Map', onTap: _pickOnMap),
-
-        if (!_recentLoading && _recent.isNotEmpty) ...[
+        if (_pickupFocus.hasFocus && _pickupCtrl.text.trim().length >= 3) ...[
+          // Live search — typed right into "Pickup location" above, results
+          // appear directly below it on this same page (no modal, no new
+          // screen).
+          const SizedBox(height: 8),
+          if (_pickupServiceDown)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: Text(
+                'Place search is unavailable right now.\nCheck your connection and try again.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: AppColors.inkSoft),
+              ),
+            )
+          else if (_pickupResults.isEmpty && !_pickupSearching)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: Text('No matching places found.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.inkSoft)),
+            )
+          else
+            ..._pickupResults.map((p) => ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.location_on_outlined, color: AppColors.inkSoft),
+                  title: Text(p.mainText ?? p.description, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: p.secondaryText != null ? Text(p.secondaryText!, maxLines: 1, overflow: TextOverflow.ellipsis) : null,
+                  onTap: () => _choosePickupResult(p),
+                )),
+        ] else if (_dropFocus.hasFocus && _dropCtrl.text.trim().length >= 3) ...[
+          // Live search — typed right into "Where to?" above, results appear
+          // directly below it on this same page (no modal, no new screen).
+          const SizedBox(height: 8),
+          if (_dropServiceDown)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: Text(
+                'Place search is unavailable right now.\nCheck your connection and try again.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: AppColors.inkSoft),
+              ),
+            )
+          else if (_dropResults.isEmpty && !_dropSearching)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: Text('No matching places found.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.inkSoft)),
+            )
+          else
+            ..._dropResults.map((p) => ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.location_on_outlined, color: AppColors.inkSoft),
+                  title: Text(p.mainText ?? p.description, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: p.secondaryText != null ? Text(p.secondaryText!, maxLines: 1, overflow: TextOverflow.ellipsis) : null,
+                  onTap: () => _chooseDropResult(p),
+                )),
+        ] else ...[
           const SizedBox(height: 20),
-          const SectionHeader('Recent searches'),
-          ..._recent.map((p) => _PlaceSuggestionRow(
-                icon: Icons.history_rounded,
-                title: p.addr ?? '${p.lat}, ${p.lng}',
-                favorited: _favorited.contains(p.addr),
-                busy: _favoriting.contains(p.addr),
-                onTap: () => _setDrop(p),
-                onFavorite: () => _favoritePoint(p),
-              )),
-        ],
-
-        const SizedBox(height: 20),
-        const SectionHeader('Suggestions near you'),
-        ...DefaultSuggestions.nearYou.map((label) => _PlaceSuggestionRow(
-              icon: Icons.place_rounded,
-              title: label,
-              favorited: _favorited.contains(label),
-              busy: _favoriting.contains(label),
-              onTap: () => _chooseSuggestion(label),
-              onFavorite: () => _favoriteSuggestion(label),
-            )),
-
-        const SizedBox(height: 24),
-        PrimaryButton(
-          label: 'See fares',
-          onPressed: _placesReady ? _loadFares : null,
-        ),
-        if (vehicle != null) ...[
-          const SizedBox(height: 10),
-          OutlinedButton(
-            onPressed: _pickup != null ? _continueWithoutDrop : null,
-            style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(52)),
-            child: const Text('Continue Without Drop'),
+          _PlanRow(icon: Icons.star_border_rounded, label: 'Saved places', onTap: _pickSavedPlace),
+          const Divider(height: 1),
+          _PlanRow(
+            icon: Icons.public_rounded,
+            label: 'Search in a different city',
+            onTap: () => _pickPlace(forPickup: false),
           ),
+          const Divider(height: 1),
+          _PlanRow(icon: Icons.push_pin_outlined, label: 'Select on Map', onTap: _pickOnMap),
+
+          if (!_recentLoading && _recent.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            const SectionHeader('Recent searches'),
+            ..._recent.map((p) => _PlaceSuggestionRow(
+                  icon: Icons.history_rounded,
+                  title: p.addr ?? '${p.lat}, ${p.lng}',
+                  favorited: _favorited.contains(p.addr),
+                  busy: _favoriting.contains(p.addr),
+                  onTap: () => _setDrop(p),
+                  onFavorite: () => _favoritePoint(p),
+                )),
+          ],
+
+          const SizedBox(height: 20),
+          const SectionHeader('Suggestions near you'),
+          ...DefaultSuggestions.nearYou.take(5).map((label) => _PlaceSuggestionRow(
+                icon: Icons.place_rounded,
+                title: label,
+                favorited: _favorited.contains(label),
+                busy: _favoriting.contains(label),
+                onTap: () => _chooseSuggestion(label),
+                onFavorite: () => _favoriteSuggestion(label),
+              )),
         ],
       ],
     );
@@ -831,71 +1126,6 @@ class _AddrRow extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _LocationField extends StatelessWidget {
-  const _LocationField({
-    required this.icon,
-    required this.iconColor,
-    required this.hint,
-    required this.onTap,
-    this.value,
-    this.bordered = true,
-  });
-
-  final IconData icon;
-  final Color iconColor;
-  final String hint;
-  final String? value;
-  final VoidCallback onTap;
-
-  /// False when this field sits flush inside a shared connector card (the
-  /// combined pickup/drop layout) instead of standing alone.
-  final bool bordered;
-
-  @override
-  Widget build(BuildContext context) {
-    final filled = value != null && value!.isNotEmpty;
-    final content = Row(
-      children: [
-        Icon(icon, color: iconColor, size: bordered ? 20 : 14),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            filled ? value! : hint,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: filled ? null : AppColors.inkSoft,
-              fontSize: 15,
-            ),
-          ),
-        ),
-      ],
-    );
-    if (!bordered) {
-      return InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: content,
-        ),
-      );
-    }
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardColor,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.line),
-        ),
-        child: content,
       ),
     );
   }

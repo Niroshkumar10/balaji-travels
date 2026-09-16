@@ -7,7 +7,6 @@ import 'package:intl/intl.dart';
 import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/util/formatters.dart';
-import '../../../core/util/geo_math.dart';
 import '../../../core/widgets/common_widgets.dart';
 import '../../../core/widgets/map_markers.dart';
 import '../../../core/widgets/map_view.dart';
@@ -28,27 +27,29 @@ class TripReviewArgs {
 /// bike/auto/hatchback/sedan/suv — there's no fare config or dispatch
 /// category for "Urbania" or "Jaguar" yet — so [bookingCategory] maps each
 /// display vehicle to the closest real category for the actual booking
-/// (dispatch, driver matching) while the UI shows the real fleet name. The
-/// fare itself is a distance-scaled estimate, not a backend quote, until
-/// these categories get real fare configs.
+/// (dispatch, driver matching, AND fare calculation). The price shown next
+/// to each fleet vehicle is the real backend quote for [bookingCategory]
+/// (see `_categoryFares`, filled from the same `/rides/estimate` call this
+/// screen already makes for the route/polyline) — not an invented
+/// per-vehicle formula, since the backend has no per-vehicle-name pricing to
+/// quote. Vehicles that map to the same category necessarily show the same
+/// fare; that's honest given what the backend can actually price, rather
+/// than a made-up number that would silently diverge from what booking
+/// actually charges.
 class _Fleet {
-  const _Fleet(this.name, this.seats, this.bookingCategory, this.baseFare, this.perKm);
+  const _Fleet(this.name, this.seats, this.bookingCategory);
   final String name;
   final int seats;
   final String bookingCategory;
-  final double baseFare;
-  final double perKm;
-
-  double fareFor(double km) => baseFare + perKm * km;
 }
 
 const _fleet = [
-  _Fleet('Urbania', 17, 'suv', 2500, 22),
-  _Fleet('Tempo Traveller', 15, 'suv', 2000, 20),
-  _Fleet('Toyota Fortuner', 6, 'suv', 3000, 26),
-  _Fleet('Jaguar', 4, 'sedan', 6000, 45),
-  _Fleet('Toyota Innova', 6, 'suv', 1200, 18),
-  _Fleet('Swift Dzire', 4, 'hatchback', 800, 14),
+  _Fleet('Urbania', 17, 'suv'),
+  _Fleet('Tempo Traveller', 15, 'suv'),
+  _Fleet('Toyota Fortuner', 6, 'suv'),
+  _Fleet('Jaguar', 4, 'sedan'),
+  _Fleet('Toyota Innova', 6, 'suv'),
+  _Fleet('Swift Dzire', 4, 'hatchback'),
 ];
 
 class TripReviewScreen extends ConsumerStatefulWidget {
@@ -68,17 +69,13 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
   String? _polyline;
   bool _busy = false;
 
-  // Straight-line distance is available instantly and synchronously, so the
-  // page (and its fares) are never blocked on — or broken by — the routing
-  // call below. That call, when it succeeds, only upgrades the number to a
-  // real driving distance and draws the actual route line.
-  late double _distanceKm = haversineMeters(
-        widget.args.pickup.lat,
-        widget.args.pickup.lng,
-        widget.args.drop.lat,
-        widget.args.drop.lng,
-      ) /
-      1000;
+  // Real backend fare per vehicle category, from the same /rides/estimate
+  // call this screen already makes for the route — not a client formula.
+  Map<String, double> _categoryFares = {};
+  bool _faresLoading = true;
+  String? _fareError;
+
+  double? get _selectedFare => _categoryFares[_selected.bookingCategory];
 
   String get _effectiveRideType => _oneWay ? 'outstation' : 'round_trip';
 
@@ -96,13 +93,19 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
     if (!mounted) return;
     res.when(
       ok: (est) => setState(() {
-        _distanceKm = est.route.km;
         _polyline = est.route.polyline;
+        _categoryFares = {for (final o in est.options) o.category: o.fare};
+        _faresLoading = false;
+        _fareError = null;
       }),
       // Real route unavailable — the page keeps working off the straight-line
-      // distance already computed above. Nothing to show the rider; this
-      // isn't a failure state, just a less precise number.
-      err: (_) {},
+      // distance already computed above, but the fares that depend on the
+      // backend's route+config quote are genuinely unknown, so say so rather
+      // than showing a stale or invented number.
+      err: (e) => setState(() {
+        _faresLoading = false;
+        _fareError = e.message;
+      }),
     );
     if (!mounted) return;
     WidgetsBinding.instance.addPostFrameCallback((_) => _fitMap());
@@ -171,7 +174,11 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
   }
 
   Future<void> _reviewBooking() async {
-    final fare = _selected.fareFor(_distanceKm);
+    final fare = _selectedFare;
+    if (fare == null) {
+      showError(context, _fareError ?? 'Fare unavailable for this vehicle right now. Try again.');
+      return;
+    }
     final scheduledLater = _scheduledAt.difference(DateTime.now()).inMinutes.abs() > 5;
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
@@ -362,11 +369,12 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
                     const SizedBox(height: 16),
                     ..._fleet.map((f) {
                       final selected = _selected.name == f.name;
+                      final fare = _categoryFares[f.bookingCategory];
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 12),
                         child: InkWell(
                           borderRadius: BorderRadius.circular(14),
-                          onTap: () => setState(() => _selected = f),
+                          onTap: _faresLoading || fare != null ? () => setState(() => _selected = f) : null,
                           child: Container(
                             padding: const EdgeInsets.all(14),
                             decoration: BoxDecoration(
@@ -392,7 +400,12 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
                                     ],
                                   ),
                                 ),
-                                Text(money(f.fareFor(_distanceKm)), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                                if (_faresLoading)
+                                  const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                                else if (fare != null)
+                                  Text(money(fare), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16))
+                                else
+                                  const Text('Unavailable', style: TextStyle(color: AppColors.inkSoft, fontSize: 12)),
                               ],
                             ),
                           ),

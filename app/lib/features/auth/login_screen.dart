@@ -119,28 +119,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     width: 2,
                   ),
                 ),
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Row(
                   children: [
-                    Container(
-                      width: 64,
-                      decoration: const BoxDecoration(
-                        color: AppColors.canvas,
-                        borderRadius: BorderRadius.only(
-                          topLeft: Radius.circular(14),
-                          bottomLeft: Radius.circular(14),
-                        ),
-                      ),
-                      child: const Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text('🇮🇳', style: TextStyle(fontSize: 16)),
-                          SizedBox(height: 2),
-                          Text('+91', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5)),
-                        ],
-                      ),
-                    ),
-                    Container(width: 1, height: 32, color: AppColors.inputBorder),
-                    const SizedBox(width: 14),
+                    const Text('🇮🇳', style: TextStyle(fontSize: 16)),
+                    const SizedBox(width: 8),
+                    const Text('+91', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15.5)),
+                    const SizedBox(width: 12),
+                    const SizedBox(height: 28, child: VerticalDivider(color: AppColors.primary, thickness: 1.4)),
+                    const SizedBox(width: 12),
                     Expanded(
                       child: TextField(
                         controller: _ctrl,
@@ -152,7 +139,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                         style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w500),
                         decoration: const InputDecoration(
+                          filled: false,
                           border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          errorBorder: InputBorder.none,
+                          focusedErrorBorder: InputBorder.none,
+                          disabledBorder: InputBorder.none,
                           isCollapsed: true,
                           counterText: '',
                           hintText: 'Enter phone number',
@@ -160,19 +153,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         ),
                       ),
                     ),
-                    if (_valid)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 16),
-                        child: Container(
-                          width: 26,
-                          height: 26,
-                          decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: AppColors.primary,
-                          ),
-                          child: const Icon(Icons.check_rounded, size: 17, color: Colors.white),
-                        ),
-                      ),
                   ],
                 ),
               ),

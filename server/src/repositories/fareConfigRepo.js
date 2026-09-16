@@ -36,27 +36,47 @@ const fareConfigRepo = {
     return ctx.queryOne(`SELECT * FROM rt_fare_configs WHERE id = :id LIMIT 1`, { id });
   },
 
+  /**
+   * Publishes a new active fare version for (vehicle_category, zone).
+   *
+   * `effective_from` is part of the table's unique key precisely so each
+   * change can be kept as its own row (real version history) instead of a
+   * value silently overwritten in place — but that only works if publishing
+   * a new version also retires the old one. Previously this ran a bare
+   * INSERT ... ON DUPLICATE KEY UPDATE, and because effective_from defaults
+   * to NOW() on every call, no two calls ever shared a key: every "update"
+   * actually inserted a brand new is_active=1 row alongside the old one.
+   * forCategory()'s `rows.find(...)` then always returned whichever row
+   * happened to sort first — the ORIGINAL config — so admin fare changes
+   * were silently never applied. Fixed by explicitly deactivating the
+   * current active row for that category/zone before inserting the new one,
+   * inside one transaction, so exactly one row is ever active at a time.
+   */
   async upsert(row, ctx = db) {
-    const res = await ctx.query(
-      `INSERT INTO rt_fare_configs
-         (vehicle_category, zone, base_fare, included_km, per_km, per_min, min_fare,
-          waiting_per_min, free_waiting_min, surge_multiplier, night_multiplier,
-          night_start, night_end, cancellation_fee, is_active)
-       VALUES
-         (:vehicleCategory, :zone, :baseFare, :includedKm, :perKm, :perMin, :minFare,
-          :waitingPerMin, :freeWaitingMin, :surgeMultiplier, :nightMultiplier,
-          :nightStart, :nightEnd, :cancellationFee, 1)
-       ON DUPLICATE KEY UPDATE
-         base_fare = VALUES(base_fare), included_km = VALUES(included_km),
-         per_km = VALUES(per_km), per_min = VALUES(per_min), min_fare = VALUES(min_fare),
-         waiting_per_min = VALUES(waiting_per_min), free_waiting_min = VALUES(free_waiting_min),
-         surge_multiplier = VALUES(surge_multiplier), night_multiplier = VALUES(night_multiplier),
-         night_start = VALUES(night_start), night_end = VALUES(night_end),
-         cancellation_fee = VALUES(cancellation_fee), updated_at = NOW()`,
-      row,
-    );
+    const run = async (tx) => {
+      await tx.query(
+        `UPDATE rt_fare_configs SET is_active = 0, updated_at = NOW()
+          WHERE vehicle_category = :vehicleCategory AND zone = :zone AND is_active = 1`,
+        row,
+      );
+      const res = await tx.query(
+        `INSERT INTO rt_fare_configs
+           (vehicle_category, zone, base_fare, included_km, per_km, per_min, min_fare,
+            waiting_per_min, free_waiting_min, surge_multiplier, night_multiplier,
+            night_start, night_end, cancellation_fee, is_active)
+         VALUES
+           (:vehicleCategory, :zone, :baseFare, :includedKm, :perKm, :perMin, :minFare,
+            :waitingPerMin, :freeWaitingMin, :surgeMultiplier, :nightMultiplier,
+            :nightStart, :nightEnd, :cancellationFee, 1)`,
+        row,
+      );
+      return res.insertId || null;
+    };
+    // Callers may already be inside a transaction (ctx is a tx context, not
+    // the shared `db` module) — only open a new one when we're not.
+    const id = ctx === db ? await db.withTransaction(run) : await run(ctx);
     this.clearCache();
-    return res.insertId || null;
+    return id;
   },
 
   clearCache() {
