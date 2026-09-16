@@ -94,6 +94,11 @@ const schema = z
     // A driver's last GPS ping older than this is treated as "not there" by
     // dispatch. Must be comfortably larger than the app's heartbeat interval.
     DRIVER_LOCATION_STALE_SECONDS: int(120),
+    // How often to check for admin call-in bookings (booking_source =
+    // 'admin_call') that need their driver_assigned/status socket event
+    // announced. The Admin Panel writes rt_rides directly and has no
+    // Socket.IO connection of its own, so this app has to notice the change.
+    ADMIN_BOOKING_POLL_MS: int(4000),
 
     // Platform commission on each completed ride's fare (percent).
     COMMISSION_PCT: int(20).pipe(z.number().int().min(0).max(90)),

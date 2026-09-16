@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -5,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/store/driver_onboarding_store.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/common_widgets.dart';
+import '../../../state/providers.dart';
 import '../driver_controller.dart';
 import 'doc_capture_screen.dart';
 import 'insurance_screen.dart';
@@ -56,6 +59,7 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
     bool circular = false,
     bool dashedDropzone = false,
     bool primaryOpensCamera = false,
+    Future<bool> Function(Uint8List bytes)? onUsePhoto,
   }) async {
     final ok = await Navigator.push<bool>(
       context,
@@ -69,10 +73,38 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
           circular: circular,
           dashedDropzone: dashedDropzone,
           primaryOpensCamera: primaryOpensCamera,
+          onUsePhoto: onUsePhoto,
         ),
       ),
     );
     if (ok == true) await _markDone(step);
+  }
+
+  /// Uploads a driver document (license/id_proof/photo) and refreshes
+  /// [driverProfileProvider] on success so the checklist/status screen picks
+  /// up the new kyc_status='pending' immediately. Returns false (without
+  /// popping the review screen) on failure so the rider can retry.
+  Future<bool> _uploadDriverDoc(
+    Uint8List bytes, {
+    required String docType,
+    String? idProofType,
+  }) async {
+    final res = await ref.read(profileRepoProvider).uploadDriverDocument(
+          docType: docType,
+          fileBytes: bytes,
+          filename: '$docType.jpg',
+          idProofType: idProofType,
+        );
+    return res.when(
+      ok: (_) {
+        ref.invalidate(driverProfileProvider);
+        return true;
+      },
+      err: (e) {
+        if (mounted) showError(context, e.message);
+        return false;
+      },
+    );
   }
 
   Future<void> _openIdentity() async {
@@ -88,6 +120,11 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
       requirements: const ['Clear photo', 'All details visible', 'No glare'],
       uploadLabel: choice == 'aadhaar' ? 'Upload Aadhaar' : 'Upload ID',
       dashedDropzone: true,
+      onUsePhoto: (bytes) => _uploadDriverDoc(
+        bytes,
+        docType: 'id_proof',
+        idProofType: choice == 'aadhaar' ? 'aadhaar' : 'other',
+      ),
     );
   }
 
@@ -95,12 +132,29 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
     final vehicleOk = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
-        builder: (_) => const DocCaptureScreen(
+        builder: (_) => DocCaptureScreen(
           title: 'Vehicle RC',
           heading: 'Upload your vehicle Registration Certificate',
-          requirements: ['Valid RC', 'Vehicle number visible'],
+          requirements: const ['Valid RC', 'Vehicle number visible'],
           uploadLabel: 'Upload RC',
           dashedDropzone: true,
+          onUsePhoto: (bytes) async {
+            final res = await ref.read(profileRepoProvider).uploadVehicleDocument(
+                  docType: 'rc',
+                  fileBytes: bytes,
+                  filename: 'rc.jpg',
+                );
+            return res.when(
+              ok: (_) {
+                ref.invalidate(driverProfileProvider);
+                return true;
+              },
+              err: (e) {
+                if (mounted) showError(context, e.message);
+                return false;
+              },
+            );
+          },
         ),
       ),
     );
@@ -138,6 +192,7 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
                         description: "We need your valid driving licence to verify that you're eligible to drive.",
                         requirements: const ['Valid licence', 'Name should match your profile', 'Clear photo', 'All details must be readable'],
                         uploadLabel: 'Upload Licence',
+                        onUsePhoto: (bytes) => _uploadDriverDoc(bytes, docType: 'license'),
                       )),
                   ('photo', 'Profile picture', _done.contains('photo'), () => _openDoc(
                         'photo',
@@ -148,6 +203,7 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
                         uploadLabel: 'Take Photo',
                         circular: true,
                         primaryOpensCamera: true,
+                        onUsePhoto: (bytes) => _uploadDriverDoc(bytes, docType: 'photo'),
                       )),
                   ('identity', 'Identity verification', _done.contains('identity'), _openIdentity),
                   ('vehicle_rc', 'Vehicle RC', hasVehicle && _done.contains('vehicle_rc'), _openVehicleSequence),

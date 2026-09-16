@@ -11,6 +11,21 @@ class Vehicle {
     this.year,
     this.docStatus = 'pending',
     this.isActive = true,
+    this.rcNumber,
+    this.rcExpiry,
+    this.rcDocPath,
+    this.insuranceNumber,
+    this.insuranceExpiry,
+    this.insuranceDocPath,
+    this.permitNumber,
+    this.permitExpiry,
+    this.permitDocPath,
+    this.fitnessNumber,
+    this.fitnessExpiry,
+    this.fitnessDocPath,
+    this.pucNumber,
+    this.pucExpiry,
+    this.pucDocPath,
   });
 
   final int id;
@@ -22,6 +37,21 @@ class Vehicle {
   final int? year;
   final String docStatus;
   final bool isActive;
+  final String? rcNumber;
+  final DateTime? rcExpiry;
+  final String? rcDocPath;
+  final String? insuranceNumber;
+  final DateTime? insuranceExpiry;
+  final String? insuranceDocPath;
+  final String? permitNumber;
+  final DateTime? permitExpiry;
+  final String? permitDocPath;
+  final String? fitnessNumber;
+  final DateTime? fitnessExpiry;
+  final String? fitnessDocPath;
+  final String? pucNumber;
+  final DateTime? pucExpiry;
+  final String? pucDocPath;
 
   String get label => [make, model].where((e) => e != null && e.isNotEmpty).join(' ');
 
@@ -35,6 +65,21 @@ class Vehicle {
         year: asIntOrNull(j['year']),
         docStatus: j['doc_status']?.toString() ?? 'pending',
         isActive: asBool(j['is_active']),
+        rcNumber: j['rc_number']?.toString(),
+        rcExpiry: asDate(j['rc_expiry']),
+        rcDocPath: j['rc_doc_path']?.toString(),
+        insuranceNumber: j['insurance_number']?.toString(),
+        insuranceExpiry: asDate(j['insurance_expiry']),
+        insuranceDocPath: j['insurance_doc_path']?.toString(),
+        permitNumber: j['permit_number']?.toString(),
+        permitExpiry: asDate(j['permit_expiry']),
+        permitDocPath: j['permit_doc_path']?.toString(),
+        fitnessNumber: j['fitness_number']?.toString(),
+        fitnessExpiry: asDate(j['fitness_expiry']),
+        fitnessDocPath: j['fitness_doc_path']?.toString(),
+        pucNumber: j['puc_number']?.toString(),
+        pucExpiry: asDate(j['puc_expiry']),
+        pucDocPath: j['puc_doc_path']?.toString(),
       );
 }
 

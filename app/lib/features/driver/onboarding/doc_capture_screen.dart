@@ -35,6 +35,7 @@ class DocCaptureScreen extends StatefulWidget {
     this.circular = false,
     this.dashedDropzone = false,
     this.primaryOpensCamera = false,
+    this.onUsePhoto,
   });
 
   final String title;
@@ -53,6 +54,15 @@ class DocCaptureScreen extends StatefulWidget {
   final bool circular;
   final bool dashedDropzone;
   final bool primaryOpensCamera;
+
+  /// Called with the picked image bytes when the rider taps "Use photo".
+  /// Return true to actually pop the screen with success, or throw/return
+  /// false to show an error and stay on the review step so they can retry.
+  /// If null (unset), "Use photo" just pops `true` immediately with no
+  /// upload — used by callers that don't have a backend field to send this
+  /// document to yet (see registration_checklist_screen.dart for which
+  /// steps currently pass this).
+  final Future<bool> Function(Uint8List bytes)? onUsePhoto;
 
   @override
   State<DocCaptureScreen> createState() => _DocCaptureScreenState();
@@ -76,6 +86,27 @@ class _DocCaptureScreenState extends State<DocCaptureScreen> {
       if (source == ImageSource.camera && mounted) await _pick(ImageSource.gallery);
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _usePhoto() async {
+    if (widget.onUsePhoto == null) {
+      Navigator.pop(context, true);
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final ok = await widget.onUsePhoto!(_bytes!);
+      if (!mounted) return;
+      if (ok) {
+        Navigator.pop(context, true);
+        return;
+      }
+      setState(() => _busy = false);
+    } catch (err) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      showError(context, err.toString());
     }
   }
 
@@ -224,7 +255,7 @@ class _DocCaptureScreenState extends State<DocCaptureScreen> {
                   Expanded(
                     child: FilledButton(
                       style: FilledButton.styleFrom(backgroundColor: AppColors.success, minimumSize: const Size.fromHeight(52)),
-                      onPressed: () => Navigator.pop(context, true),
+                      onPressed: _busy ? null : _usePhoto,
                       child: const Text('Use photo'),
                     ),
                   ),

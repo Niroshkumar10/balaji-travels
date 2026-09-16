@@ -58,6 +58,32 @@ class ApiClient {
   Future<Result<Map<String, dynamic>>> patch(String path, {Object? body}) =>
       _send(() => _dio.patch(path, data: body));
 
+  /// Multipart upload — [fileField] is the form field name the server's
+  /// multer middleware expects (`upload.single('file')` on the KYC document
+  /// routes), [fileBytes]/[filename] the picked image, [fields] any other
+  /// form text fields (docType, number, expiry, ...).
+  ///
+  /// contentType is set explicitly rather than left to the BaseOptions'
+  /// default 'application/json' header — Dio only fills in the multipart
+  /// boundary itself when the caller declares 'multipart/form-data' up
+  /// front; otherwise the base JSON header would win and the server would
+  /// receive an unparsable body.
+  Future<Result<Map<String, dynamic>>> postMultipart(
+    String path, {
+    required String fileField,
+    required List<int> fileBytes,
+    required String filename,
+    Map<String, String> fields = const {},
+  }) =>
+      _send(() => _dio.post(
+            path,
+            data: FormData.fromMap({
+              ...fields,
+              fileField: MultipartFile.fromBytes(fileBytes, filename: filename),
+            }),
+            options: Options(contentType: 'multipart/form-data'),
+          ));
+
   Future<Result<Map<String, dynamic>>> delete(String path) =>
       _send(() => _dio.delete(path));
 

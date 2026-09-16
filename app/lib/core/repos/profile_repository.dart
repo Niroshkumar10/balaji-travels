@@ -46,6 +46,58 @@ class ProfileRepository {
     );
   }
 
+  /// docType: 'license' | 'id_proof' | 'photo' — see server drivers.routes.js.
+  Future<Result<DriverProfile>> uploadDriverDocument({
+    required String docType,
+    required List<int> fileBytes,
+    required String filename,
+    String? number,
+    String? idProofType,
+    DateTime? expiry,
+  }) async {
+    final res = await _api.postMultipart(
+      '/drivers/me/documents',
+      fileField: 'file',
+      fileBytes: fileBytes,
+      filename: filename,
+      fields: {
+        'docType': docType,
+        if (number != null) 'number': number,
+        if (idProofType != null) 'idProofType': idProofType,
+        if (expiry != null) 'expiry': expiry.toIso8601String().split('T').first,
+      },
+    );
+    return res.when<Result<DriverProfile>>(
+      ok: (j) => Ok(DriverProfile.fromProfileJson(asMap(j['profile']))),
+      err: (e) => Err(e),
+    );
+  }
+
+  /// docType: 'rc' | 'insurance' | 'permit' | 'fitness' | 'puc'.
+  Future<Result<Vehicle>> uploadVehicleDocument({
+    required String docType,
+    required List<int> fileBytes,
+    required String filename,
+    String? number,
+    DateTime? expiry,
+  }) async {
+    final res = await _api.postMultipart(
+      '/drivers/me/vehicle/documents',
+      fileField: 'file',
+      fileBytes: fileBytes,
+      filename: filename,
+      fields: {
+        'docType': docType,
+        if (number != null) 'number': number,
+        if (expiry != null) 'expiry': expiry.toIso8601String().split('T').first,
+      },
+    );
+    return res.when<Result<Vehicle>>(
+      ok: (j) => Ok(Vehicle.fromJson(asMap(j['vehicle']))),
+      err: (e) => Err(e),
+    );
+  }
+
   // ── driver presence (socket is primary; REST fallback) ──
   Future<Result<void>> goOnline({required double lat, required double lng}) async {
     final res = await _api.post('/drivers/me/online', body: {'lat': lat, 'lng': lng});

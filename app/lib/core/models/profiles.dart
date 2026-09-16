@@ -64,7 +64,14 @@ class DriverProfile {
     this.name,
     this.email,
     this.kycStatus = 'pending',
+    this.kycRejectReason,
     this.licenseNo,
+    this.licenseExpiry,
+    this.licenseDocPath,
+    this.idProofType,
+    this.idProofNumber,
+    this.idProofDocPath,
+    this.photoPath,
     this.ratingAvg = 0,
     this.ratingCount = 0,
     this.isOnline = false,
@@ -79,7 +86,14 @@ class DriverProfile {
   final String? name;
   final String? email;
   final String kycStatus; // pending | approved | rejected | suspended
+  final String? kycRejectReason;
   final String? licenseNo;
+  final DateTime? licenseExpiry;
+  final String? licenseDocPath;
+  final String? idProofType;
+  final String? idProofNumber;
+  final String? idProofDocPath;
+  final String? photoPath;
   final double ratingAvg;
   final int ratingCount;
   final bool isOnline;
@@ -100,7 +114,14 @@ class DriverProfile {
       name: j['name']?.toString(),
       email: j['email']?.toString(),
       kycStatus: d['kyc_status']?.toString() ?? 'pending',
+      kycRejectReason: d['kyc_reject_reason']?.toString(),
       licenseNo: d['license_no']?.toString(),
+      licenseExpiry: asDate(d['license_expiry']),
+      licenseDocPath: d['license_doc_path']?.toString(),
+      idProofType: d['id_proof_type']?.toString(),
+      idProofNumber: d['id_proof_number']?.toString(),
+      idProofDocPath: d['id_proof_doc_path']?.toString(),
+      photoPath: d['photo_path']?.toString(),
       ratingAvg: asDouble(d['rating_avg']),
       ratingCount: asInt(d['rating_count']),
       isOnline: asBool(d['is_online']),

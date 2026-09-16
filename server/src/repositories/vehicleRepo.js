@@ -4,7 +4,32 @@ const db = require('../infra/db');
 const store = require('../infra/memoryStore');
 
 const FIELDS = `id, driver_id, category, make, model, plate_no, color, year,
-        doc_status, is_active, created_at`;
+        doc_status, rc_number, rc_expiry, rc_doc_path,
+        insurance_number, insurance_expiry, insurance_doc_path,
+        permit_number, permit_expiry, permit_doc_path,
+        fitness_number, fitness_expiry, fitness_doc_path,
+        puc_number, puc_expiry, puc_doc_path,
+        is_active, created_at`;
+
+// Whitelisted vehicle-document fields → columns — see driverRepo.DOC_COLUMNS
+// for why this is a fixed table rather than building SQL from request keys.
+const DOC_COLUMNS = {
+  rcNumber: 'rc_number',
+  rcExpiry: 'rc_expiry',
+  rcDocPath: 'rc_doc_path',
+  insuranceNumber: 'insurance_number',
+  insuranceExpiry: 'insurance_expiry',
+  insuranceDocPath: 'insurance_doc_path',
+  permitNumber: 'permit_number',
+  permitExpiry: 'permit_expiry',
+  permitDocPath: 'permit_doc_path',
+  fitnessNumber: 'fitness_number',
+  fitnessExpiry: 'fitness_expiry',
+  fitnessDocPath: 'fitness_doc_path',
+  pucNumber: 'puc_number',
+  pucExpiry: 'puc_expiry',
+  pucDocPath: 'puc_doc_path',
+};
 
 const sqlImpl = {
   listByDriver(driverId, ctx = db) {
@@ -43,6 +68,25 @@ const sqlImpl = {
       vehicleId,
     });
   },
+
+  /**
+   * Writes a vehicle document submission (RC / insurance / permit / fitness /
+   * PUC) — only columns present in `patch` are touched. A new/changed
+   * document resets doc_status to 'pending' for re-review, same rationale as
+   * driverRepo.updateDocuments.
+   */
+  async updateDocuments(id, patch, ctx = db) {
+    const sets = [];
+    const params = { id };
+    for (const [key, col] of Object.entries(DOC_COLUMNS)) {
+      if (patch[key] === undefined) continue;
+      sets.push(`${col} = :${key}`);
+      params[key] = patch[key];
+    }
+    if (sets.length === 0) return;
+    sets.push(`doc_status = 'pending'`);
+    await ctx.query(`UPDATE rt_vehicles SET ${sets.join(', ')} WHERE id = :id`, params);
+  },
 };
 
 const memImpl = {
@@ -74,6 +118,16 @@ const memImpl = {
     }
     const d = store.find('drivers', (x) => x.id === Number(driverId));
     if (d) store.update(d, { current_vehicle_id: Number(vehicleId) });
+  },
+  async updateDocuments(id, patch) {
+    const v = store.find('vehicles', (x) => x.id === Number(id));
+    if (!v) return;
+    const changes = {};
+    for (const [key, col] of Object.entries(DOC_COLUMNS)) {
+      if (patch[key] !== undefined) changes[col] = patch[key];
+    }
+    if (Object.keys(changes).length === 0) return;
+    store.update(v, { ...changes, doc_status: 'pending' });
   },
 };
 

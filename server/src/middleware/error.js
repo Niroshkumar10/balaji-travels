@@ -1,6 +1,7 @@
 'use strict';
 
 const { ZodError } = require('zod');
+const multer = require('multer');
 const ApiError = require('../utils/apiError');
 const logger = require('../infra/logger');
 const env = require('../config/env');
@@ -22,6 +23,11 @@ function errorHandler(err, req, res, next) {
         details: err.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
       },
     });
+  }
+
+  // Bad upload (too large, wrong field, etc.) → 400 instead of a leaked 500.
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: { code: `UPLOAD_${err.code}`, message: err.message } });
   }
 
   // Known DB integrity errors → 409 instead of a leaked 500.

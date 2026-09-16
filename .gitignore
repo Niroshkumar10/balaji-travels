@@ -17,6 +17,9 @@ key.properties
 # logs — keep the folder, ignore its contents
 logs/*
 !logs/.gitkeep
+
+# uploaded KYC documents — never committed
+server/uploads/
 *.log
 npm-debug.log*
 

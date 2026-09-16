@@ -32,10 +32,13 @@ class VerificationStatusScreen extends ConsumerWidget {
             if (p == null) return const Center(child: EmptyState(icon: Icons.person_off_rounded, title: 'Profile unavailable'));
             return switch (p.kycStatus) {
               'approved' => _Approved(onStart: () => context.go('/d/dashboard')),
-              'rejected' => _Rejected(onRetry: () => context.go('/d/onboarding/checklist')),
+              'rejected' => _Rejected(reason: p.kycRejectReason, onRetry: () => context.go('/d/onboarding/checklist')),
               _ => RefreshIndicator(
                   onRefresh: () async => ref.invalidate(driverProfileProvider),
-                  child: _Pending(hasVehicle: p.vehicles.isNotEmpty),
+                  child: _Pending(
+                    hasVehicle: p.vehicles.isNotEmpty,
+                    documentsSubmitted: p.licenseDocPath != null && p.idProofDocPath != null && p.photoPath != null,
+                  ),
                 ),
             };
           },
@@ -46,8 +49,9 @@ class VerificationStatusScreen extends ConsumerWidget {
 }
 
 class _Pending extends StatelessWidget {
-  const _Pending({required this.hasVehicle});
+  const _Pending({required this.hasVehicle, required this.documentsSubmitted});
   final bool hasVehicle;
+  final bool documentsSubmitted;
 
   @override
   Widget build(BuildContext context) {
@@ -69,7 +73,7 @@ class _Pending extends StatelessWidget {
         ),
         const SizedBox(height: 24),
         _StatusRow(label: 'Profile completed', done: true),
-        _StatusRow(label: 'Documents submitted', done: true),
+        _StatusRow(label: 'Documents submitted', done: documentsSubmitted),
         _StatusRow(label: 'Vehicle verified', done: hasVehicle),
         const _StatusRow(label: 'Final verification', done: false, current: true),
         const SizedBox(height: 28),
@@ -148,8 +152,9 @@ class _Approved extends StatelessWidget {
 }
 
 class _Rejected extends StatelessWidget {
-  const _Rejected({required this.onRetry});
+  const _Rejected({required this.onRetry, this.reason});
   final VoidCallback onRetry;
+  final String? reason;
 
   @override
   Widget build(BuildContext context) {
@@ -174,12 +179,14 @@ class _Rejected extends StatelessWidget {
             decoration: BoxDecoration(color: const Color(0xFFFFFBEB), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFFDE68A))),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: const [
-                Text('Reason', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13, color: Color(0xFF92400E))),
-                SizedBox(height: 6),
+              children: [
+                const Text('Reason', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13, color: Color(0xFF92400E))),
+                const SizedBox(height: 6),
                 Text(
-                  'The licence number could not be read clearly. Please re-upload a clear photo of your driving licence.',
-                  style: TextStyle(fontSize: 13, color: Color(0xFF92400E)),
+                  reason?.isNotEmpty == true
+                      ? reason!
+                      : 'Please review your documents and re-upload where needed.',
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF92400E)),
                 ),
               ],
             ),

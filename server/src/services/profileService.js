@@ -75,6 +75,46 @@ const profileService = {
     if (!driver) throw ApiError.notFound('Driver profile not found');
     return vehicleRepo.listByDriver(driver.id);
   },
+
+  /** docType: 'license' | 'id_proof' | 'photo'. See drivers.routes.js for the validated shape. */
+  async uploadDriverDocument(userId, { docType, number, expiry, idProofType, filename }) {
+    const driver = await driverRepo.findByUserId(userId);
+    if (!driver) throw ApiError.notFound('Driver profile not found');
+    const patch = {};
+    if (docType === 'license') {
+      if (number !== undefined) patch.licenseNo = number;
+      if (expiry !== undefined) patch.licenseExpiry = expiry;
+      patch.licenseDocPath = filename;
+    } else if (docType === 'id_proof') {
+      if (idProofType !== undefined) patch.idProofType = idProofType;
+      if (number !== undefined) patch.idProofNumber = number;
+      patch.idProofDocPath = filename;
+    } else if (docType === 'photo') {
+      patch.photoPath = filename;
+    } else {
+      throw ApiError.badRequest('Unknown document type', 'INVALID_DOC_TYPE');
+    }
+    await driverRepo.updateDocuments(driver.id, patch);
+    return this.getDriver(userId);
+  },
+
+  /** docType: 'rc' | 'insurance' | 'permit' | 'fitness' | 'puc'. */
+  async uploadVehicleDocument(userId, { docType, number, expiry, filename }) {
+    const driver = await driverRepo.findByUserId(userId);
+    if (!driver) throw ApiError.notFound('Driver profile not found');
+    const vehicle = driver.current_vehicle_id ? await vehicleRepo.findById(driver.current_vehicle_id) : null;
+    if (!vehicle) throw ApiError.notFound('No vehicle on file for this driver yet — add a vehicle first');
+
+    const prefix = { rc: 'rc', insurance: 'insurance', permit: 'permit', fitness: 'fitness', puc: 'puc' }[docType];
+    if (!prefix) throw ApiError.badRequest('Unknown document type', 'INVALID_DOC_TYPE');
+
+    const patch = {};
+    if (number !== undefined) patch[`${prefix}Number`] = number;
+    if (expiry !== undefined) patch[`${prefix}Expiry`] = expiry;
+    patch[`${prefix}DocPath`] = filename;
+    await vehicleRepo.updateDocuments(vehicle.id, patch);
+    return vehicleRepo.findById(vehicle.id);
+  },
 };
 
 module.exports = profileService;
