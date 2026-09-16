@@ -82,7 +82,6 @@ class AppColors {
   // ── buttons ───────────────────────────────────────────────────────────
   static const btnPrimaryBg = Color(0xFFC83228);
   static const btnPrimaryText = Color(0xFFFFFFFF);
-  static const btnPrimaryPressed = Color(0xFFA5221A);
   static const btnDisabledBg = Color(0xFFE0E0E0);
   static const btnSecondaryBg = Color(0xFFEAA828);
   static const btnSecondaryText = Color(0xFF1E1E1E);

@@ -10,8 +10,12 @@ import '../../../core/widgets/common_widgets.dart';
 import 'earnings_controller.dart';
 
 class EarningsScreen extends ConsumerStatefulWidget {
-  const EarningsScreen({super.key, this.showBack = true});
+  const EarningsScreen({super.key, this.showBack = true, this.onBack});
   final bool showBack;
+
+  /// When this screen is a bottom-nav tab rather than a pushed route, pass a
+  /// callback that switches the shell back to Home instead of trying to pop.
+  final VoidCallback? onBack;
   @override
   ConsumerState<EarningsScreen> createState() => _State();
 }
@@ -29,6 +33,7 @@ class _State extends ConsumerState<EarningsScreen> {
         title: 'Earnings',
         fallbackRoute: '/d/dashboard',
         showBack: widget.showBack,
+        onBack: widget.onBack,
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),

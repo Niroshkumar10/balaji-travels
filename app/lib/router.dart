@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/auth/session.dart';
-import 'core/models/models.dart';
 import 'features/auth/login_screen.dart';
 import 'features/auth/otp_screen.dart';
 import 'features/auth/role_pick_screen.dart';
@@ -150,7 +149,7 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/c/plan-trip',
-        builder: (_, s) => OutstationPlanScreen(pickup: s.extra as LatLngPoint),
+        builder: (_, s) => OutstationPlanScreen(args: s.extra as OutstationPlanArgs),
       ),
       GoRoute(path: '/c/saved-places', builder: (_, __) => const SavedPlacesScreen()),
       GoRoute(path: '/c/profile', builder: (_, __) => const CustomerProfileScreen()),

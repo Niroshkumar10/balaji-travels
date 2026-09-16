@@ -11,7 +11,7 @@ import '../../../core/util/default_suggestions.dart';
 import '../../../core/widgets/common_widgets.dart';
 import '../../../core/widgets/map_view.dart';
 import '../../../state/providers.dart';
-import '../outstation/trip_review_screen.dart';
+import '../outstation/outstation_plan_screen.dart';
 import '../ride_request/where_to_screen.dart';
 import '../ride_session_controller.dart';
 import 'vehicle_picker_sheet.dart';
@@ -117,36 +117,93 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
   /// Outstation: stays on this same screen — the panel below the tabs swaps
   /// to a destination search + fixed popular-trip list instead of navigating
   /// away. Resolves the rider's current position once, for use as pickup.
+  ///
+  /// If location can't be resolved (permission not granted/denied, GPS off,
+  /// no last-known fix to fall back to — common on a fresh browser profile)
+  /// this used to fail completely silently: the tab still switched, but
+  /// every tap on the search bar or a destination below did nothing at all,
+  /// with zero explanation. Now it asks for permission explicitly and tells
+  /// the rider what went wrong instead of just going dead.
   Future<void> _startOutstation() async {
     setState(() => _rideType = _RideType.outstation);
-    if (_outstationPickup != null) return;
-    final pos = await ref.read(locationServiceProvider).current();
-    if (pos == null || !mounted) return;
-    final rev = await ref.read(miscRepoProvider).reverseGeocode(pos.latitude, pos.longitude);
-    if (!mounted) return;
-    setState(() {
-      _outstationPickup = rev.valueOrNull ?? LatLngPoint(lat: pos.latitude, lng: pos.longitude, addr: 'Current location');
-    });
+    await _ensureOutstationPickup();
   }
 
-  Future<void> _chooseOutstation(String label) async {
-    if (_outstationPickup == null || _resolvingOutstation) return;
+  /// Resolves [_outstationPickup] exactly once, however many callers ask for
+  /// it concurrently. `_resolvingOutstation` is set synchronously (before the
+  /// first `await`) and checked by every caller before it does anything else
+  /// — without that, rapid taps on the search bar / a destination each spawn
+  /// their own independent geolocation+geocode chain, and every one of them
+  /// eventually finishes and pushes trip-review, so the screen looked "stuck"
+  /// for a few seconds and then opened the same page once per tap.
+  Future<void> _ensureOutstationPickup() async {
+    if (_outstationPickup != null || _resolvingOutstation) return;
     setState(() => _resolvingOutstation = true);
-    final loc = await resolveSuggestion(ref, label, lat: _outstationPickup!.lat, lng: _outstationPickup!.lng);
-    if (!mounted) return;
-    setState(() => _resolvingOutstation = false);
-    if (loc == null) {
-      showError(context, "Couldn't locate that place. Try again.");
-      return;
+    try {
+      final perm = await ref.read(locationServiceProvider).ensurePermission();
+      if (!perm.granted) {
+        if (mounted) {
+          showError(
+            context,
+            !perm.serviceEnabled
+                ? 'Turn on location services to plan a trip.'
+                : perm.permanentlyDenied
+                    ? 'Location access is blocked. Enable it in your browser/device settings to plan a trip.'
+                    : 'Location access is needed to plan a trip.',
+          );
+        }
+        return;
+      }
+      final pos = await ref.read(locationServiceProvider).current();
+      if (!mounted) return;
+      if (pos == null) {
+        showError(context, "Couldn't get your location. Try again.");
+        return;
+      }
+      final rev = await ref.read(miscRepoProvider).reverseGeocode(pos.latitude, pos.longitude);
+      if (!mounted) return;
+      setState(() {
+        _outstationPickup = rev.valueOrNull ?? LatLngPoint(lat: pos.latitude, lng: pos.longitude, addr: 'Current location');
+      });
+    } finally {
+      if (mounted) setState(() => _resolvingOutstation = false);
     }
-    context.push(
-      '/c/trip-review',
-      extra: TripReviewArgs(
-        pickup: _outstationPickup!,
-        drop: LatLngPoint(lat: loc.lat, lng: loc.lng, addr: loc.addr ?? label),
-        rideType: 'outstation',
-      ),
-    );
+  }
+
+  /// Tapping a destination here used to skip straight to the One Way/Round
+  /// Trip page. It now lands on Plan-your-ride first (with this destination
+  /// already filled in as the drop) — the same review step reached from
+  /// "I want to go…" — and only advances to trip review from there, once the
+  /// rider actively continues, instead of jumping ahead on their behalf.
+  Future<void> _chooseOutstation(String label) async {
+    if (_resolvingOutstation) return;
+    await _ensureOutstationPickup();
+    if (!mounted || _outstationPickup == null) return;
+    setState(() => _resolvingOutstation = true);
+    try {
+      final loc = await resolveSuggestion(ref, label, lat: _outstationPickup!.lat, lng: _outstationPickup!.lng);
+      if (!mounted) return;
+      if (loc == null) {
+        showError(context, "Couldn't locate that place. Try again.");
+        return;
+      }
+      context.push(
+        '/c/plan-trip',
+        extra: OutstationPlanArgs(
+          pickup: _outstationPickup!,
+          initialDrop: LatLngPoint(lat: loc.lat, lng: loc.lng, addr: loc.addr ?? label),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _resolvingOutstation = false);
+    }
+  }
+
+  Future<void> _openOutstationSearch() async {
+    if (_resolvingOutstation) return;
+    await _ensureOutstationPickup();
+    if (!mounted || _outstationPickup == null) return;
+    context.push('/c/plan-trip', extra: OutstationPlanArgs(pickup: _outstationPickup!));
   }
 
   /// Local (and Rental, which has no distinct inline view) — search bar +
@@ -230,51 +287,57 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
   /// search box plus the fixed list of popular outstation trips, filtered as
   /// the rider types. Tapping one goes straight to the trip review screen.
   Widget _outstationPanel() {
-    return LoadingOverlay(
-      busy: _resolvingOutstation,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Tappable, like Local's search bar — opens the full Plan-your-ride
-          // screen (pickup/drop + Select on Map + popular destinations)
-          // instead of filtering in place.
-          InkWell(
-            borderRadius: BorderRadius.circular(12),
-            onTap: () => _outstationPickup == null
-                ? null
-                : context.push('/c/plan-trip', extra: _outstationPickup),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-              decoration: BoxDecoration(color: AppColors.canvas, borderRadius: BorderRadius.circular(12)),
-              child: const Row(
-                children: [
-                  Icon(Icons.search_rounded, color: AppColors.inkSoft),
-                  SizedBox(width: 10),
-                  Text('I want to go...', style: TextStyle(color: AppColors.inkSoft, fontSize: 15)),
-                ],
-              ),
+    // No LoadingOverlay here — that used to gray out this whole panel while
+    // resolving location/a destination. The search bar's own icon shows a
+    // small spinner instead; the list stays fully visible and tappable
+    // throughout (each tap is itself guarded against piling up, see
+    // _chooseOutstation/_ensureOutstationPickup).
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Tappable, like Local's search bar — opens the full Plan-your-ride
+        // screen (pickup/drop + Select on Map + popular destinations)
+        // instead of filtering in place.
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: _openOutstationSearch,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+            decoration: BoxDecoration(color: AppColors.canvas, borderRadius: BorderRadius.circular(12)),
+            child: Row(
+              children: [
+                _resolvingOutstation
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.inkSoft),
+                      )
+                    : const Icon(Icons.search_rounded, color: AppColors.inkSoft),
+                const SizedBox(width: 10),
+                const Text('I want to go...', style: TextStyle(color: AppColors.inkSoft, fontSize: 15)),
+              ],
             ),
           ),
-          const SizedBox(height: 6),
-          Expanded(
-            child: ListView.separated(
-              padding: const EdgeInsets.only(top: 8, bottom: 12),
-              itemCount: DefaultSuggestions.outstation.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
-              itemBuilder: (_, i) {
-                final label = DefaultSuggestions.outstation[i];
-                return ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.landscape_rounded, color: AppColors.inkSoft),
-                  title: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.inkSoft),
-                  onTap: () => _chooseOutstation(label),
-                );
-              },
-            ),
+        ),
+        const SizedBox(height: 6),
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.only(top: 8, bottom: 12),
+            itemCount: DefaultSuggestions.outstation.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (_, i) {
+              final label = DefaultSuggestions.outstation[i];
+              return ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.landscape_rounded, color: AppColors.inkSoft),
+                title: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.inkSoft),
+                onTap: () => _chooseOutstation(label),
+              );
+            },
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 

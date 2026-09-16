@@ -15,8 +15,12 @@ final _driverHistoryProvider = FutureProvider.autoDispose<List<Ride>>((ref) asyn
 });
 
 class DriverHistoryScreen extends ConsumerStatefulWidget {
-  const DriverHistoryScreen({super.key, this.showBack = true});
+  const DriverHistoryScreen({super.key, this.showBack = true, this.onBack});
   final bool showBack;
+
+  /// When this screen is a bottom-nav tab rather than a pushed route, pass a
+  /// callback that switches the shell back to Home instead of trying to pop.
+  final VoidCallback? onBack;
 
   @override
   ConsumerState<DriverHistoryScreen> createState() => _State();
@@ -46,7 +50,7 @@ class _State extends ConsumerState<DriverHistoryScreen> {
   Widget build(BuildContext context) {
     final async = ref.watch(_driverHistoryProvider);
     return Scaffold(
-      appBar: RtAppBar(title: 'Trips', fallbackRoute: '/d/dashboard', showBack: widget.showBack),
+      appBar: RtAppBar(title: 'Trips', fallbackRoute: '/d/dashboard', showBack: widget.showBack, onBack: widget.onBack),
       body: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => EmptyState(icon: Icons.error_outline_rounded, title: 'Error', subtitle: '$e'),

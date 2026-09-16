@@ -17,6 +17,7 @@ class RtAppBar extends StatelessWidget implements PreferredSizeWidget {
     this.fallbackRoute = '/c/home',
     this.showBack = true,
     this.bottom,
+    this.onBack,
   });
 
   final String title;
@@ -24,6 +25,12 @@ class RtAppBar extends StatelessWidget implements PreferredSizeWidget {
   final String fallbackRoute;
   final bool showBack;
   final PreferredSizeWidget? bottom;
+
+  /// Overrides the default pop/fallback-route behaviour — for a screen that
+  /// is really a bottom-nav tab (not a pushed route, so there's nothing to
+  /// pop and no route to go to without rebuilding the whole shell), pass a
+  /// callback that just switches the shell back to its Home tab instead.
+  final VoidCallback? onBack;
 
   @override
   Size get preferredSize =>
@@ -38,13 +45,14 @@ class RtAppBar extends StatelessWidget implements PreferredSizeWidget {
           ? IconButton(
               icon: const Icon(Icons.arrow_back_rounded),
               tooltip: MaterialLocalizations.of(context).backButtonTooltip,
-              onPressed: () {
-                if (context.canPop()) {
-                  context.pop();
-                } else {
-                  context.go(fallbackRoute);
-                }
-              },
+              onPressed: onBack ??
+                  () {
+                    if (context.canPop()) {
+                      context.pop();
+                    } else {
+                      context.go(fallbackRoute);
+                    }
+                  },
             )
           : null,
       actions: actions,

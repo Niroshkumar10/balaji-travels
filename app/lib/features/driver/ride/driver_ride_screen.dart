@@ -247,9 +247,13 @@ class _Panel extends StatelessWidget {
       ),
       child: SafeArea(
         top: false,
+        // No LoadingOverlay here — that scrim used to gray out this whole
+        // panel on every tap (Start navigation, Start trip, Confirm cash
+        // received, …). `busy` now only disables/spins the specific button
+        // that was pressed, via PrimaryButton's own `busy`.
         child: Padding(
           padding: const EdgeInsets.all(20),
-          child: LoadingOverlay(busy: busy, child: _safeBody(context)),
+          child: _safeBody(context),
         ),
       ),
     );
@@ -290,7 +294,7 @@ class _Panel extends StatelessWidget {
             const SizedBox(height: 4),
             Text(ride.pickupAddr ?? 'Pickup point', style: const TextStyle(color: AppColors.inkSoft)),
             const SizedBox(height: 16),
-            PrimaryButton(label: 'Start navigation to pickup', onPressed: onStartNav),
+            PrimaryButton(label: 'Start navigation to pickup', busy: busy, onPressed: onStartNav),
           ],
         );
       case RideStatus.driverArriving:
@@ -303,7 +307,7 @@ class _Panel extends StatelessWidget {
             const SizedBox(height: 4),
             Text(ride.pickupAddr ?? 'Pickup point', style: const TextStyle(color: AppColors.inkSoft)),
             const SizedBox(height: 16),
-            PrimaryButton(label: 'I\'ve arrived', onPressed: onArrived),
+            PrimaryButton(label: 'I\'ve arrived', busy: busy, onPressed: onArrived),
           ],
         );
       case RideStatus.driverArrived:
@@ -320,9 +324,9 @@ class _Panel extends StatelessWidget {
                 style: TextStyle(color: AppColors.inkSoft),
               ),
               const SizedBox(height: 16),
-              OutlinedButton(onPressed: onCancel, child: const Text('Cancel')),
+              OutlinedButton(onPressed: busy ? null : onCancel, child: const Text('Cancel')),
               const SizedBox(height: 10),
-              PrimaryButton(label: 'Start trip', onPressed: onConfirmPickup),
+              PrimaryButton(label: 'Start trip', busy: busy, onPressed: onConfirmPickup),
             ],
           );
         }
@@ -337,6 +341,7 @@ class _Panel extends StatelessWidget {
             const SizedBox(height: 16),
             PrimaryButton(
               label: 'Start trip',
+              busy: busy,
               onPressed: otp.length == 4 ? onStart : null,
             ),
           ],
@@ -367,7 +372,7 @@ class _Panel extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-            PrimaryButton(label: 'Complete trip', onPressed: onComplete),
+            PrimaryButton(label: 'Complete trip', busy: busy, onPressed: onComplete),
           ],
         );
       case RideStatus.driverCompleted:
@@ -385,7 +390,7 @@ class _Panel extends StatelessWidget {
                 style: const TextStyle(color: AppColors.inkSoft)),
             const SizedBox(height: 16),
             if (isCash)
-              PrimaryButton(label: 'Confirm cash received', onPressed: onSettleCash)
+              PrimaryButton(label: 'Confirm cash received', busy: busy, onPressed: onSettleCash)
             else
               const Row(
                 mainAxisAlignment: MainAxisAlignment.center,

@@ -8,49 +8,120 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/common_widgets.dart';
 import '../../../state/providers.dart';
 import '../driver_controller.dart';
-import '../onboarding/payment_details_screen.dart';
-import 'driver_account_detail_screen.dart';
 
-const _languages = ['English', 'தமிழ் (Tamil)', 'తెలుగు (Telugu)', 'ಕನ್ನಡ (Kannada)', 'हिंदी (Hindi)'];
-
-/// The "Account" screen — a menu of everything about the driver, matching
-/// the reference: Personal information / Vehicle / Documents / Bank details
-/// / Language / Notifications / Safety / Help & support, then Log out.
-/// Personal information / Vehicle / Documents open the combined expandable
-/// DriverAccountDetailScreen rather than three separate sheets.
+/// The Profile TAB — a simple, editable "My Profile" view matching the
+/// rider's own profile screen: name/email are real backend fields (saved via
+/// ProfileRepository.updateDriver), phone is the real, non-editable login
+/// identity, and address/UPI have no backend column yet so they're kept in
+/// DriverOnboardingStore (the same local-only store the onboarding wizard's
+/// Payment Details step already uses for UPI) — clearly local, not a fake
+/// server round-trip. Everything else about the driver's account (vehicle,
+/// documents, bank details, language, safety, wallet…) now lives in the
+/// hamburger drawer on the Home tab instead of here.
 class DriverProfileScreen extends ConsumerStatefulWidget {
-  const DriverProfileScreen({super.key, this.showBack = true});
+  const DriverProfileScreen({super.key, this.showBack = true, this.onBack});
   final bool showBack;
+
+  /// When this screen is a bottom-nav tab rather than a pushed route, pass a
+  /// callback that switches the shell back to Home instead of trying to pop.
+  final VoidCallback? onBack;
   @override
   ConsumerState<DriverProfileScreen> createState() => _State();
 }
 
 class _State extends ConsumerState<DriverProfileScreen> {
-  void _openDetail(String section) => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => DriverAccountDetailScreen(initialExpanded: section)),
-      );
+  final _name = TextEditingController();
+  final _email = TextEditingController();
+  String? _address;
+  String? _upi;
+  bool _editing = false;
+  bool _busy = false;
+  bool _hydrated = false;
 
-  Future<void> _pickLanguage() async {
-    final current = (await DriverOnboardingStore.get())['language'] as String?;
+  @override
+  void dispose() {
+    _name.dispose();
+    _email.dispose();
+    super.dispose();
+  }
+
+  Future<void> _hydrate(String? name, String? email) async {
+    if (_hydrated) return;
+    _hydrated = true;
+    _name.text = name ?? '';
+    _email.text = email ?? '';
+    final local = await DriverOnboardingStore.get();
     if (!mounted) return;
-    final picked = await showModalBottomSheet<String>(
+    setState(() {
+      _address = local['address'] as String?;
+      _upi = local['upiId'] as String?;
+    });
+  }
+
+  Future<void> _save() async {
+    setState(() => _busy = true);
+    final res = await ref.read(profileRepoProvider).updateDriver({
+      'name': _name.text.trim(),
+      if (_email.text.trim().isNotEmpty) 'email': _email.text.trim(),
+    });
+    if (!mounted) return;
+    setState(() => _busy = false);
+    res.when(
+      ok: (p) {
+        ref.read(authControllerProvider.notifier).refreshName(p.name ?? '');
+        ref.invalidate(driverProfileProvider);
+        setState(() => _editing = false);
+        showOk(context, 'Profile updated');
+      },
+      err: (e) => showError(context, e.message),
+    );
+  }
+
+  Future<void> _editAddress() async {
+    final ctrl = TextEditingController(text: _address ?? '');
+    final saved = await showDialog<bool>(
       context: context,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: _languages
-              .map((l) => ListTile(
-                    title: Text(l),
-                    trailing: l == current ? const Icon(Icons.check_rounded, color: AppColors.primary) : null,
-                    onTap: () => Navigator.pop(context, l),
-                  ))
-              .toList(),
+      builder: (ctx) => AlertDialog(
+        title: const Text('Address'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLines: 3,
+          decoration: const InputDecoration(hintText: 'Your address'),
         ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+        ],
       ),
     );
-    if (picked != null) await DriverOnboardingStore.patch({'language': picked});
+    if (saved == true && ctrl.text.trim().isNotEmpty) {
+      await DriverOnboardingStore.patch({'address': ctrl.text.trim()});
+      if (mounted) setState(() => _address = ctrl.text.trim());
+    }
+  }
+
+  Future<void> _editUpi() async {
+    final ctrl = TextEditingController(text: _upi ?? '');
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('UPI ID'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'yourname@upi'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (saved == true && ctrl.text.trim().isNotEmpty) {
+      await DriverOnboardingStore.patch({'upiId': ctrl.text.trim(), 'payoutMethod': 'upi'});
+      if (mounted) setState(() => _upi = ctrl.text.trim());
+    }
   }
 
   Future<void> _logout() async {
@@ -58,119 +129,151 @@ class _State extends ConsumerState<DriverProfileScreen> {
     if (mounted) context.go('/role');
   }
 
+  Future<void> _confirmDelete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete account?'),
+        content: const Text(
+          'This will sign you out. Account deletion isn\'t available in-app yet — contact support to fully erase your data.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _logout();
+  }
+
   @override
   Widget build(BuildContext context) {
     final async = ref.watch(driverProfileProvider);
     final auth = ref.watch(authControllerProvider);
-    final p = async.valueOrNull;
-
-    final name = (p?.name?.trim().isNotEmpty ?? false) ? p!.name!.trim() : (auth.name?.trim().isNotEmpty ?? false) ? auth.name!.trim() : 'Driver';
-    final mobile = p?.mobile ?? auth.mobile ?? '';
 
     return Scaffold(
-      appBar: RtAppBar(title: 'Account', fallbackRoute: '/d/dashboard', showBack: widget.showBack),
-      body: RefreshIndicator(
-        onRefresh: () async => ref.refresh(driverProfileProvider.future),
-        child: Builder(
-          builder: (context) => ListView(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            children: [
-              Center(
-                child: Column(
+      appBar: RtAppBar(title: 'My Profile', fallbackRoute: '/d/dashboard', showBack: widget.showBack, onBack: widget.onBack),
+      body: async.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => EmptyState(icon: Icons.error_outline_rounded, title: 'Error', subtitle: '$e'),
+        data: (p) {
+          if (p == null) {
+            return const EmptyState(icon: Icons.person_off_rounded, title: 'Profile unavailable');
+          }
+          final mobile = p.mobile.isNotEmpty ? p.mobile : (auth.mobile ?? '');
+          _hydrate(p.name, p.email);
+          return LoadingOverlay(
+            busy: _busy,
+            child: Builder(
+              builder: (context) {
+                return ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
                   children: [
-                    const CircleAvatar(radius: 40, backgroundColor: AppColors.canvas, child: Icon(Icons.person, size: 40, color: AppColors.inkSoft)),
-                    const SizedBox(height: 10),
-                    Text(name, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
-                    if (mobile.isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Text('+91 $mobile', style: const TextStyle(color: AppColors.inkSoft)),
-                    ],
-                    if (p != null) ...[
-                      const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.star_rounded, color: AppColors.accent, size: 18),
-                          Text(' ${p.ratingAvg.toStringAsFixed(1)} (${p.ratingCount})'),
-                        ],
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const CircleAvatar(radius: 40, backgroundColor: AppColors.canvas, child: Icon(Icons.person, size: 40, color: AppColors.inkSoft)),
+                        const Spacer(),
+                        IconButton(
+                          icon: Icon(_editing ? Icons.check_rounded : Icons.edit_rounded, color: AppColors.primary),
+                          onPressed: _editing ? _save : () => setState(() => _editing = true),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    _editing
+                        ? TextField(
+                            controller: _name,
+                            decoration: const InputDecoration(labelText: 'Full name'),
+                            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+                          )
+                        : Text(
+                            _name.text.isNotEmpty ? _name.text : 'Add your name',
+                            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+                          ),
+                    const SizedBox(height: 18),
+                    if (mobile.isNotEmpty) _InfoRow(icon: Icons.call_rounded, value: '+91 $mobile'), // real, not editable — login identity
+                    const SizedBox(height: 14),
+                    _editing
+                        ? TextField(
+                            controller: _email,
+                            keyboardType: TextInputType.emailAddress,
+                            decoration: const InputDecoration(prefixIcon: Icon(Icons.email_outlined), hintText: 'Email'),
+                          )
+                        : _InfoRow(
+                            icon: Icons.email_outlined,
+                            value: _email.text.isNotEmpty ? _email.text : 'Add your email',
+                          ),
+                    const SizedBox(height: 14),
+                    InkWell(
+                      onTap: _editAddress,
+                      child: _InfoRow(
+                        icon: Icons.home_outlined,
+                        value: (_address?.isNotEmpty ?? false) ? _address! : 'Add your address',
                       ),
-                    ],
+                    ),
+                    const SizedBox(height: 18),
+                    const Divider(height: 1),
+                    const SizedBox(height: 8),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.qr_code_rounded, color: AppColors.inkSoft),
+                      title: const Text('UPI', style: TextStyle(fontWeight: FontWeight.w700)),
+                      subtitle: Text((_upi?.isNotEmpty ?? false) ? _upi! : 'Add your UPI ID', style: const TextStyle(color: AppColors.inkSoft)),
+                      trailing: CircleAvatar(
+                        radius: 16,
+                        backgroundColor: Colors.transparent,
+                        child: IconButton(
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.add_circle_outline_rounded, color: AppColors.primary),
+                          onPressed: _editUpi,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 40),
+                    PrimaryButton(label: 'Logout', onPressed: _logout),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.error,
+                          side: const BorderSide(color: AppColors.error),
+                          minimumSize: const Size.fromHeight(52),
+                        ),
+                        onPressed: _confirmDelete,
+                        child: const Text('Delete Account'),
+                      ),
+                    ),
                   ],
-                ),
-              ),
-              const SizedBox(height: 24),
-              if (p == null)
-                _DetailsUnavailable(loading: async.isLoading, onRetry: () => ref.invalidate(driverProfileProvider))
-              else ...[
-                const Divider(height: 1),
-                AppTile(icon: Icons.person_rounded, title: 'Personal information', onTap: () => _openDetail('personal')),
-                AppTile(icon: Icons.directions_car_filled_rounded, title: 'Vehicle', onTap: () => _openDetail('vehicle')),
-                AppTile(icon: Icons.description_rounded, title: 'Documents', onTap: () => _openDetail('documents')),
-                AppTile(
-                  icon: Icons.account_balance_rounded,
-                  title: 'Bank details',
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PaymentDetailsScreen())),
-                ),
-                AppTile(icon: Icons.language_rounded, title: 'Language', onTap: _pickLanguage),
-                AppTile(icon: Icons.notifications_rounded, title: 'Notifications', onTap: () => context.push('/d/notifications')),
-                AppTile(icon: Icons.shield_rounded, title: 'Safety', iconColor: AppColors.error, onTap: () => context.push('/d/safety')),
-                AppTile(icon: Icons.help_outline_rounded, title: 'Help & support', onTap: () => context.push('/d/safety')),
-                AppTile(icon: Icons.savings_rounded, title: 'Wallet & payouts', iconColor: AppColors.secondary, onTap: () => context.push('/d/wallet')),
-                AppTile(icon: Icons.swap_horiz_rounded, title: 'Switch to Ride', iconColor: AppColors.info, onTap: _logout),
-              ],
-              const SizedBox(height: 16),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: OutlinedButton.icon(
-                  onPressed: _logout,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.error,
-                    side: const BorderSide(color: AppColors.error),
-                    minimumSize: const Size.fromHeight(52),
-                  ),
-                  icon: const Icon(Icons.logout_rounded),
-                  label: const Text('Log out'),
-                ),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        ),
+                );
+              },
+            ),
+          );
+        },
       ),
     );
   }
 }
 
-/// Inline placeholder for the menu block when `/drivers/me` hasn't loaded —
-/// there's nothing to show a Personal information / Vehicle / etc. menu
-/// against without it.
-class _DetailsUnavailable extends StatelessWidget {
-  const _DetailsUnavailable({required this.loading, required this.onRetry});
-  final bool loading;
-  final VoidCallback onRetry;
+class _InfoRow extends StatelessWidget {
+  const _InfoRow({required this.icon, required this.value});
+  final IconData icon;
+  final String value;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.cardBorder)),
-        child: Column(
-          children: [
-            if (loading)
-              const CircularProgressIndicator()
-            else ...[
-              const Icon(Icons.cloud_off_rounded, color: AppColors.inkSoft),
-              const SizedBox(height: 8),
-              const Text("Couldn't load your details.", textAlign: TextAlign.center, style: TextStyle(color: AppColors.inkSoft, fontSize: 13)),
-              const SizedBox(height: 12),
-              FilledButton.tonalIcon(onPressed: onRetry, icon: const Icon(Icons.refresh_rounded, size: 18), label: const Text('Retry')),
-            ],
-          ],
-        ),
-      ),
+    return Row(
+      children: [
+        Icon(icon, size: 20, color: AppColors.inkSoft),
+        const SizedBox(width: 14),
+        Expanded(child: Text(value, style: const TextStyle(fontSize: 15, color: AppColors.textSecondary))),
+      ],
     );
   }
 }

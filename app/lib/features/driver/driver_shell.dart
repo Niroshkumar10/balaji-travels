@@ -108,11 +108,11 @@ class _DriverShellState extends ConsumerState<DriverShell> with WidgetsBindingOb
     return Scaffold(
       body: IndexedStack(
         index: _tab,
-        children: const [
-          DriverHomeTab(),
-          EarningsScreen(showBack: false),
-          DriverHistoryScreen(showBack: false),
-          DriverProfileScreen(showBack: false),
+        children: [
+          const DriverHomeTab(),
+          EarningsScreen(onBack: () => setState(() => _tab = 0)),
+          DriverHistoryScreen(onBack: () => setState(() => _tab = 0)),
+          DriverProfileScreen(onBack: () => setState(() => _tab = 0)),
         ],
       ),
       bottomNavigationBar: NavigationBar(

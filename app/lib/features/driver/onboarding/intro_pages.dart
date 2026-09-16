@@ -58,6 +58,16 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
     _pageCtrl.nextPage(duration: const Duration(milliseconds: 260), curve: Curves.easeOut);
   }
 
+  void _back() {
+    if (_page > 0) {
+      _pageCtrl.previousPage(duration: const Duration(milliseconds: 260), curve: Curves.easeOut);
+    } else if (context.canPop()) {
+      context.pop();
+    } else {
+      context.go('/role');
+    }
+  }
+
   bool get _canContinue => switch (_page) {
         0 => _name.text.trim().isNotEmpty,
         _ => true,
@@ -93,6 +103,13 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
           busy: _busy,
           child: Column(
             children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_back_rounded),
+                  onPressed: _back,
+                ),
+              ),
               Expanded(
                 child: PageView(
                   controller: _pageCtrl,
