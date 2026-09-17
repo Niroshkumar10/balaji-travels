@@ -71,11 +71,11 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
     if (!mounted) return;
     setState(() => _busy = false);
     res.when(
-      // The router redirect takes over once auth state flips; this is a
-      // belt-and-braces nudge for the common case.
-      ok: (_) => context.go(
-        widget.role == AppRole.driver ? '/d/dashboard' : '/c/home',
-      ),
+      // Route through the location-permission primer first — it explicitly
+      // triggers the OS permission dialog and only then continues to Home;
+      // going straight to Home relied on the map's own in-context request,
+      // which isn't a reliable enough trigger on every device.
+      ok: (_) => context.go('/permission'),
       err: (e) => showError(context, e.message),
     );
   }

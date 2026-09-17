@@ -7,6 +7,8 @@ import '../../../core/store/driver_onboarding_store.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/common_widgets.dart';
 import '../driver_controller.dart';
+import '../profile/driver_account_detail_screen.dart';
+import 'payment_details_screen.dart';
 
 /// Summary of everything the checklist collected, with a submit action that
 /// marks the local application "submitted" and hands off to a real
@@ -21,6 +23,26 @@ class ReviewSubmitScreen extends ConsumerStatefulWidget {
 
 class _ReviewSubmitScreenState extends ConsumerState<ReviewSubmitScreen> {
   bool _busy = false;
+
+  /// The old "Edit" links just did `context.pop()` regardless of which
+  /// section was tapped — a leftover placeholder that went back to the
+  /// checklist but never actually let the driver change anything. These
+  /// open the real editing screen for each section instead, then refresh
+  /// this page's data once the driver comes back.
+  Future<void> _editSection(String initialExpanded) async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => DriverAccountDetailScreen(initialExpanded: initialExpanded)));
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _editDocuments() async {
+    await context.push('/d/onboarding/checklist');
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _editPayment() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => const PaymentDetailsScreen()));
+    if (mounted) setState(() {});
+  }
 
   Future<void> _submit() async {
     setState(() => _busy = true);
@@ -57,7 +79,7 @@ class _ReviewSubmitScreenState extends ConsumerState<ReviewSubmitScreen> {
               children: [
                 _Section(
                   title: 'Personal',
-                  onEdit: () => context.pop(),
+                  onEdit: () => _editSection('personal'),
                   lines: [
                     'Name · ${p?.name ?? '—'}',
                     'Phone · +91 ${p?.mobile ?? '—'}',
@@ -66,7 +88,7 @@ class _ReviewSubmitScreenState extends ConsumerState<ReviewSubmitScreen> {
                 ),
                 _Section(
                   title: 'Vehicle',
-                  onEdit: () => context.pop(),
+                  onEdit: () => _editSection('vehicle'),
                   lines: [
                     'Model · ${vehicle == null ? '—' : (vehicle.label.isEmpty ? vehicle.category : vehicle.label)}',
                     if (vehicle != null) 'Reg No. · ${vehicle.plateNo}',
@@ -74,12 +96,12 @@ class _ReviewSubmitScreenState extends ConsumerState<ReviewSubmitScreen> {
                 ),
                 _Section(
                   title: 'Documents',
-                  onEdit: () => context.pop(),
+                  onEdit: () => _editDocuments(),
                   lines: const ['Driving Licence', 'Identity document', 'Vehicle RC', 'Insurance'],
                 ),
                 _Section(
                   title: 'Payment',
-                  onEdit: () => context.pop(),
+                  onEdit: () => _editPayment(),
                   lines: [
                     payoutMethod == 'upi'
                         ? 'UPI · ${upi ?? '—'}'

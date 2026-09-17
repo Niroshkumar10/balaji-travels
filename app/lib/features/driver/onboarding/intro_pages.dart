@@ -58,14 +58,24 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
     _pageCtrl.nextPage(duration: const Duration(milliseconds: 260), curve: Curves.easeOut);
   }
 
-  void _back() {
+  Future<void> _back() async {
     if (_page > 0) {
       _pageCtrl.previousPage(duration: const Duration(milliseconds: 260), curve: Curves.easeOut);
-    } else if (context.canPop()) {
-      context.pop();
-    } else {
-      context.go('/role');
+      return;
     }
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+    // Reached here straight from OTP verify, which replaces the whole
+    // routing stack (context.go) — there's no earlier screen left to pop
+    // to. The router's own redirect also bounces an authenticated driver
+    // straight back off '/role' to this same screen, which is what made
+    // this button look like it did nothing at all. Logging out first is
+    // what actually makes "back" leave this flow, matching what abandoning
+    // sign-up at this point really means.
+    await ref.read(authControllerProvider.notifier).logout();
+    if (mounted) context.go('/role');
   }
 
   bool get _canContinue => switch (_page) {
@@ -89,7 +99,10 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
       ok: (_) {
         ref.read(authControllerProvider.notifier).refreshName(_name.text.trim());
         ref.invalidate(driverProfileProvider);
-        context.pushReplacement('/d/onboarding/checklist');
+        // A real push (not pushReplacement) — keeps this screen underneath
+        // on the stack so the checklist's default back button actually has
+        // somewhere to pop back to (right onto the Choose Vehicle page).
+        context.push('/d/onboarding/checklist');
       },
       err: (e) => showError(context, e.message),
     );

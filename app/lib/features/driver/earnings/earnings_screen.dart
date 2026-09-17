@@ -130,6 +130,11 @@ class _State extends ConsumerState<EarningsScreen> {
                             '${e.isCredit ? '+' : ''}${money(e.amount)}',
                             style: TextStyle(fontWeight: FontWeight.w700, color: e.isCredit ? AppColors.success : AppColors.danger),
                           ),
+                          // Only entries tied to a real ride (trip_earning,
+                          // commission) can open trip details — a payout or
+                          // adjustment isn't about any one trip, so it's not
+                          // tappable rather than opening something wrong.
+                          onTap: e.rideId == null ? null : () => context.push('/d/trip-detail/${e.rideId}'),
                         ))
                     .toList(),
               );
