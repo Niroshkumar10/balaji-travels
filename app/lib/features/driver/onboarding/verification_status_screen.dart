@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/common_widgets.dart';
+import '../../../core/widgets/rt_app_bar.dart';
 import '../driver_controller.dart';
 
 /// Reflects the real `kycStatus` from the backend — an ops reviewer flips
@@ -17,7 +18,15 @@ class VerificationStatusScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(driverProfileProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('Application status')),
+      // Explicit destination, not a plain pop — this screen is reached in
+      // ways that leave nothing to pop back to (a fresh app launch straight
+      // here, or via context.go from "Got it" on Application Submitted), so
+      // "back" always deliberately returns to Review rather than depending
+      // on whatever happens to be on the Navigator stack.
+      appBar: RtAppBar(
+        title: 'Application status',
+        onBack: () => context.go('/d/onboarding/review'),
+      ),
       body: SafeArea(
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),

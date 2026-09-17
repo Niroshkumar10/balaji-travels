@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/store/driver_onboarding_store.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/common_widgets.dart';
+import '../../../core/widgets/rt_app_bar.dart';
 import '../../../state/providers.dart';
 import '../driver_controller.dart';
 import 'doc_capture_screen.dart';
@@ -47,6 +48,18 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
   Future<void> _markDone(String step) async {
     await DriverOnboardingStore.setStepDone(step, true);
     if (mounted) setState(() => _done = {..._done, step});
+  }
+
+  /// This is reached straight off the intro pages (a real push, so the
+  /// default back button could pop back there) but also straight from a
+  /// fresh app launch or the Application Status screen, with no earlier
+  /// screen to pop to. Either way, "back" here means abandoning the whole
+  /// driver sign-up, so it deliberately always lands on the Ride/Drive
+  /// picker rather than depending on the Navigator stack — logging out
+  /// first so the router's auth-redirect doesn't bounce it straight back.
+  Future<void> _back() async {
+    await ref.read(authControllerProvider.notifier).logout();
+    if (mounted) context.go('/role');
   }
 
   Future<void> _openDoc(
@@ -176,7 +189,7 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
   Widget build(BuildContext context) {
     final profileAsync = ref.watch(driverProfileProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('Complete your driver profile')),
+      appBar: RtAppBar(title: 'Complete your driver profile', onBack: _back),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : profileAsync.when(

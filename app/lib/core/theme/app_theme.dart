@@ -71,6 +71,14 @@ class AppTheme {
       primaryColor: primary,
       hintColor: AppColors.inputPlaceholder,
 
+      // No ripple/press-state tinting anywhere — taps on buttons and plain
+      // InkWells (AppTile, list rows, round icon buttons, …) just act, with
+      // no gray/tinted flash first.
+      splashFactory: NoSplash.splashFactory,
+      splashColor: Colors.transparent,
+      highlightColor: Colors.transparent,
+      hoverColor: Colors.transparent,
+
       appBarTheme: AppBarTheme(
         backgroundColor: isDark ? AppColors.darkSurface : AppColors.background,
         foregroundColor: textPrimary,
@@ -137,12 +145,7 @@ class AppTheme {
           minimumSize: const Size.fromHeight(52),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-        ).copyWith(
-          overlayColor: WidgetStateProperty.resolveWith(
-            (s) => s.contains(WidgetState.pressed)
-                ? AppColors.btnPrimaryPressed.withValues(alpha: 0.9)
-                : null,
-          ),
+          overlayColor: Colors.transparent,
         ),
       ),
 
@@ -155,6 +158,7 @@ class AppTheme {
           minimumSize: const Size.fromHeight(52),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          overlayColor: Colors.transparent,
         ),
       ),
 
@@ -165,15 +169,16 @@ class AppTheme {
           minimumSize: const Size.fromHeight(52),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+          overlayColor: Colors.transparent,
         ),
       ),
 
       textButtonTheme: TextButtonThemeData(
-        style: TextButton.styleFrom(foregroundColor: primary),
+        style: TextButton.styleFrom(foregroundColor: primary, overlayColor: Colors.transparent),
       ),
 
       iconButtonTheme: IconButtonThemeData(
-        style: IconButton.styleFrom(foregroundColor: textPrimary),
+        style: IconButton.styleFrom(foregroundColor: textPrimary, overlayColor: Colors.transparent),
       ),
 
       chipTheme: ChipThemeData(
