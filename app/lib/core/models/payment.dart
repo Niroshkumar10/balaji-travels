@@ -56,3 +56,31 @@ class GatewayOrder {
     );
   }
 }
+
+/// Response of `POST /rides/prebook-order` — same shape as [GatewayOrder]
+/// minus `paymentId`, since no ride/payment row exists yet at this point
+/// (paying happens BEFORE the ride is created — see ride_repository.dart's
+/// `create(payment: ...)`).
+class PrebookOrder {
+  const PrebookOrder({
+    required this.orderId,
+    required this.amountPaise,
+    this.keyId,
+    this.stub = false,
+  });
+
+  final String orderId;
+  final int amountPaise;
+  final String? keyId;
+  final bool stub;
+
+  factory PrebookOrder.fromJson(Map<String, dynamic> j) {
+    final o = asMap(j['order']);
+    return PrebookOrder(
+      orderId: o['id']?.toString() ?? '',
+      amountPaise: asInt(o['amount']),
+      keyId: j['keyId']?.toString(),
+      stub: asBool(j['stub']),
+    );
+  }
+}

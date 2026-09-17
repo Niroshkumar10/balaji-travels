@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "67565204724",
+    "project_id": "sri-balaji-travels-eef28",
+    "storage_bucket": "sri-balaji-travels-eef28.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:67565204724:android:d0f5a13f1eb5f581451aa1",
+        "android_client_info": {
+          "package_name": "com.redtaxi.redtaxi"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA6PPraIJ85ifyEOGwIBtBkbUPwKvm-PbU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

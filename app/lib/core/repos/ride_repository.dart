@@ -1,6 +1,7 @@
 import '../models/models.dart';
 import '../net/api_client.dart';
 import '../net/result.dart';
+import '../payments/checkout_types.dart';
 
 class RideRepository {
   RideRepository(this._api);
@@ -29,6 +30,10 @@ class RideRepository {
     String rideType = 'local',
     String paymentMethod = 'cash',
     String? promoCode,
+    // Required when paymentMethod is 'upi' — the Razorpay payment already
+    // made against the order from PaymentRepository.createPrebookOrder().
+    // The backend verifies it BEFORE creating the ride or starting dispatch.
+    CheckoutResult? payment,
   }) async {
     final res = await _api.post('/rides', body: {
       'pickup': pickup.toJson(),
@@ -37,6 +42,12 @@ class RideRepository {
       'rideType': rideType,
       'paymentMethod': paymentMethod,
       if (promoCode != null && promoCode.isNotEmpty) 'promoCode': promoCode,
+      if (payment != null)
+        'payment': {
+          'orderId': payment.orderId,
+          'paymentId': payment.paymentId,
+          'signature': payment.signature,
+        },
     });
     return _ride(res);
   }

@@ -14,6 +14,27 @@ class PaymentRepository {
     );
   }
 
+  /// UPI booking, step 1 — quote the fare and open a Razorpay order for it
+  /// before any ride exists yet. See RideRepository.create(payment: ...) for
+  /// step 2 (creating the ride once this order is paid).
+  Future<Result<PrebookOrder>> createPrebookOrder({
+    required LatLngPoint pickup,
+    required LatLngPoint drop,
+    required String vehicleCategory,
+    String? promoCode,
+  }) async {
+    final res = await _api.post('/rides/prebook-order', body: {
+      'pickup': pickup.toJson(),
+      'drop': drop.toJson(),
+      'vehicleCategory': vehicleCategory,
+      if (promoCode != null && promoCode.isNotEmpty) 'promoCode': promoCode,
+    });
+    return res.when<Result<PrebookOrder>>(
+      ok: (j) => Ok(PrebookOrder.fromJson(j)),
+      err: (e) => Err(e),
+    );
+  }
+
   /// Customer: create a gateway order to open Razorpay checkout.
   Future<Result<GatewayOrder>> createOrder(int rideId, {String? idempotencyKey}) async {
     final res = await _api.post(

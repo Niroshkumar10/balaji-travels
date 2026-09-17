@@ -23,6 +23,8 @@ const realtime = require('../realtime/emitter');
 const notifyService = require('./notifyService');
 const earningsService = require('./earningsService');
 const promoService = require('./promoService');
+const geo = require('./geoService');
+const fareService = require('./fareService');
 const paymentRepo = require('../repositories/paymentRepo');
 const rideRepo = require('../repositories/rideRepo');
 const driverRepo = require('../repositories/driverRepo');
@@ -33,6 +35,23 @@ const hasRazorpay = Boolean(env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET);
 
 function hmacHex(secret, data) {
   return crypto.createHmac('sha256', secret).update(data).digest('hex');
+}
+
+/**
+ * Same check verifyClientPayment always did — extracted so the pre-booking
+ * UPI flow (pay BEFORE the ride/dispatch exists — see rideService.createRide)
+ * can use the exact same verification, not a second implementation of it.
+ * No keys configured (dev/sandbox) → nothing to check against, matches the
+ * existing verifyClientPayment behavior of skipping verification then too.
+ */
+function isValidSignature(orderId, paymentId, signature) {
+  if (!hasRazorpay) return true;
+  const expected = hmacHex(env.RAZORPAY_KEY_SECRET, `${orderId}|${paymentId}`);
+  try {
+    return Boolean(signature) && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  } catch {
+    return false; // e.g. length mismatch — timingSafeEqual throws instead of returning false
+  }
 }
 
 async function createRazorpayOrder(amountPaise, receipt) {
@@ -164,6 +183,86 @@ const paymentService = {
     });
   },
 
+  /**
+   * UPI booking, step 1: quote the fare for a ride that doesn't exist yet and
+   * open a Razorpay order against that amount — same createRazorpayOrder()
+   * the post-ride flow uses, just before rideRepo.create() instead of after.
+   * Never trusts a client-supplied fare, same principle as rideService.
+   * createRide() itself: distance/duration/fare are always recomputed here,
+   * not taken from the fare-selection screen the customer already saw.
+   */
+  async createPrebookOrder({ customerId, userId, pickup, drop, vehicleCategory, promoCode }) {
+    const route = await geo.route(pickup, drop);
+    let quote = await fareService.quote({
+      category: vehicleCategory,
+      distanceM: route.distanceM,
+      durationS: route.durationS,
+    });
+    if (promoCode) {
+      const p = await promoService.validate({ code: promoCode, userId, fare: quote.total });
+      quote = await fareService.quote({
+        category: vehicleCategory,
+        distanceM: route.distanceM,
+        durationS: route.durationS,
+        promoDiscount: p.discount,
+      });
+    }
+    if (!(quote.total > 0)) throw ApiError.badRequest('Invalid fare amount', 'BAD_FARE');
+
+    const order = await createRazorpayOrder(Math.round(quote.total * 100), `prebook-${customerId}-${Date.now()}`);
+    return {
+      order: { id: order.id, amount: order.amount, currency: 'INR' },
+      keyId: env.RAZORPAY_KEY_ID || null,
+      stub: Boolean(order.stub),
+      amount: quote.total,
+    };
+  },
+
+  /**
+   * Verify a UPI payment made BEFORE the ride existed. Pure signature check —
+   * no DB access — so rideService.createRide() can call this BEFORE
+   * rideRepo.create()/dispatchService.start() ever run. Throws on failure,
+   * which the caller lets propagate so no ride is ever created for an
+   * unpaid/failed/cancelled booking.
+   */
+  verifyPrebookSignature({ orderId, paymentId, signature }) {
+    if (!isValidSignature(orderId, paymentId, signature)) {
+      throw ApiError.badRequest('Payment signature verification failed', 'BAD_SIGNATURE');
+    }
+  },
+
+  /**
+   * UPI booking, step 2: called by rideService.createRide() right after the
+   * ride row exists (a payment needs a real ride_id) — records the payment
+   * already verified by verifyPrebookSignature as paid immediately. Does NOT
+   * touch ride status (the ride is still REQUESTED/about to dispatch, not
+   * anywhere near completion) — this only makes rideService.completeRide()
+   * later see an already-paid payment via paymentRepo.findPaidForRide() and
+   * settle straight through instead of asking the customer to pay again.
+   */
+  async recordPrebookPayment({ rideId, customerId, amount, orderId, paymentId }) {
+    const payment = await paymentRepo.create({ rideId, customerId, method: 'upi', amount, gateway: 'razorpay' });
+    await paymentRepo.setGatewayOrder(payment.id, orderId);
+    await paymentRepo.markPaid(payment.id, { gatewayPaymentId: paymentId });
+    await rideRepo.attachPayment(rideId, payment.id, 'upi');
+    return payment;
+  },
+
+  /**
+   * A ride reaching completion whose payment was already settled (a
+   * pre-booked UPI ride) needs to close the loop exactly like settleCash()/
+   * verifyClientPayment() do — advance PAYMENT_PENDING → COMPLETED and emit
+   * the same events — instead of sitting stuck at PAYMENT_PENDING forever
+   * because nothing else will ever call "confirm payment" for it.
+   */
+  async settleAlreadyPaid(rideId) {
+    const paid = await paymentRepo.findPaidForRide(rideId);
+    if (!paid) throw ApiError.conflict('No paid payment on file for this ride', 'NOT_PAID');
+    const result = await db.withTransaction((tx) => settlePaidRide(tx, { rideId, paymentId: paid.id }));
+    await emitSettled(result.ride);
+    return result;
+  },
+
   /** Customer taps "pay by UPI/card" → get a gateway order to open checkout. */
   async createGatewayOrder(rideId, customerProfileId, { idempotencyKey } = {}) {
     const { payment } = await this.ensureForRide(rideId, { method: 'upi', idempotencyKey });
@@ -207,12 +306,8 @@ const paymentService = {
 
   /** Customer's app returns from Razorpay checkout with a signed payload. */
   async verifyClientPayment(rideId, customerProfileId, { orderId, paymentId, signature }) {
-    if (hasRazorpay) {
-      const expected = hmacHex(env.RAZORPAY_KEY_SECRET, `${orderId}|${paymentId}`);
-      const ok =
-        signature &&
-        crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-      if (!ok) throw ApiError.badRequest('Payment signature verification failed', 'BAD_SIGNATURE');
+    if (!isValidSignature(orderId, paymentId, signature)) {
+      throw ApiError.badRequest('Payment signature verification failed', 'BAD_SIGNATURE');
     }
     const result = await db.withTransaction(async (tx) => {
       const ride = await rideRepo.findById(rideId, tx);

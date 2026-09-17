@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../../../core/models/models.dart';
+import '../../../core/payments/checkout.dart';
 import '../../../core/store/recent_search_store.dart';
 import '../../../core/store/rider_contacts_store.dart';
 import '../../../core/theme/app_colors.dart';
@@ -231,6 +232,7 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
     _pickupCtrl.dispose();
     _pickupFocus.dispose();
     _pickupDebouncer.dispose();
+    Checkout.dispose();
     super.dispose();
   }
 
@@ -564,6 +566,19 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
       showError(context, 'Pick a valid pickup and destination from search first.');
       return;
     }
+    if (_paymentMethod == 'upi') {
+      await _confirmWithUpi();
+    } else {
+      await _createRide();
+    }
+  }
+
+  /// Cash keeps doing exactly what it always did — create the ride (which
+  /// starts the normal dispatch flow) immediately. For UPI, this is only
+  /// ever called AFTER a successful Razorpay payment (see _confirmWithUpi),
+  /// with `payment` set — same createRide()/dispatch path either way, the
+  /// backend is what decides a UPI ride can't be created without it.
+  Future<void> _createRide({CheckoutResult? payment}) async {
     setState(() => _busy = true);
     final res = await ref.read(rideRepoProvider).create(
           pickup: _pickup!,
@@ -571,6 +586,7 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
           vehicleCategory: _selected!.category,
           paymentMethod: _paymentMethod,
           promoCode: _promoApplied,
+          payment: payment,
         );
     if (!mounted) return;
     setState(() => _busy = false);
@@ -580,6 +596,56 @@ class _WhereToScreenState extends ConsumerState<WhereToScreen> {
         context.go('/c/ride/${ride.id}');
       },
       err: (e) => showError(context, e.message),
+    );
+  }
+
+  /// UPI: quote + open a Razorpay order BEFORE any ride exists, same as
+  /// payment_screen.dart's post-ride _payByUpi — same Checkout wrapper, same
+  /// sandbox/stub fallback. The ride (and dispatch, and the driver seeing
+  /// it) only ever gets created from the success callback below. Any
+  /// failure/cancel/dismiss just resets the button — nothing is created.
+  Future<void> _confirmWithUpi() async {
+    setState(() => _busy = true);
+    final res = await ref.read(paymentRepoProvider).createPrebookOrder(
+          pickup: _pickup!,
+          drop: _drop!,
+          vehicleCategory: _selected!.category,
+          promoCode: _promoApplied,
+        );
+    if (!mounted) return;
+
+    res.when(
+      ok: (order) {
+        if (order.stub || order.keyId == null || !Checkout.isSupported) {
+          // No real gateway keys (dev/sandbox) OR no native SDK (web) →
+          // settle through the backend's stub-confirm path directly, same
+          // fallback payment_screen.dart already uses.
+          _createRide(
+            payment: CheckoutResult(
+              orderId: order.orderId,
+              paymentId: 'pay_sandbox_${DateTime.now().millisecondsSinceEpoch}',
+              signature: '',
+            ),
+          );
+          return;
+        }
+        Checkout.open(
+          keyId: order.keyId!,
+          orderId: order.orderId,
+          amountPaise: order.amountPaise,
+          name: 'Sri Balaji Travels',
+          description: 'Ride booking',
+          onSuccess: (r) => _createRide(payment: r),
+          onError: (msg) {
+            setState(() => _busy = false);
+            if (mounted) showError(context, msg);
+          },
+        );
+      },
+      err: (e) {
+        setState(() => _busy = false);
+        showError(context, e.message);
+      },
     );
   }
 

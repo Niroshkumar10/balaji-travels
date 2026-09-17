@@ -31,6 +31,22 @@ router.post(
   asyncHandler(ctrl.estimate),
 );
 
+// UPI booking, step 1 — quote + open a Razorpay order before any ride exists.
+// See rideService.createRide()'s `payment` handling for step 2.
+router.post(
+  '/prebook-order',
+  requireRole('customer'),
+  validate({
+    body: z.object({
+      pickup: place,
+      drop: place,
+      vehicleCategory,
+      promoCode: z.string().trim().min(3).max(40).optional(),
+    }),
+  }),
+  asyncHandler(ctrl.prebookOrder),
+);
+
 // ── customer: create / list / get / cancel ──
 router.post(
   '/',
@@ -43,6 +59,15 @@ router.post(
       rideType: z.enum(['local', 'outstation', 'round_trip']).optional(),
       paymentMethod: paymentMethod.optional(),
       promoCode: z.string().trim().min(3).max(40).optional(),
+      // Required when paymentMethod is 'upi' — the Razorpay payment already
+      // made against the order from POST /rides/prebook-order.
+      payment: z
+        .object({
+          orderId: z.string().min(1),
+          paymentId: z.string().min(1),
+          signature: z.string().optional(),
+        })
+        .optional(),
     }),
   }),
   asyncHandler(ctrl.create),

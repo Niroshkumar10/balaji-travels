@@ -108,6 +108,12 @@ const rideService = {
     promoCode,
     bookingSource = 'app',
     createdByAdminId = null,
+    // { orderId, paymentId, signature } — required when paymentMethod is
+    // 'upi'. The customer already paid the quoted fare via Razorpay BEFORE
+    // calling this (see paymentService.createPrebookOrder) — verified here,
+    // before anything is created, so a driver can never be offered a ride
+    // for a payment that failed, was cancelled, or was never made.
+    payment,
   }) {
     const active = await rideRepo.findActiveForCustomer(customer.profileId);
     if (active) {
@@ -115,6 +121,15 @@ const rideService = {
         rideId: active.id,
         status: active.status,
       });
+    }
+
+    if (paymentMethod === 'upi') {
+      if (!payment?.orderId || !payment?.paymentId) {
+        throw ApiError.badRequest('Payment confirmation required for UPI bookings', 'PAYMENT_REQUIRED');
+      }
+      // Throws on a bad/missing signature — nothing below has run yet, so no
+      // ride and no dispatch are ever created for an unverified payment.
+      paymentService.verifyPrebookSignature(payment);
     }
 
     const route = await geo.route(pickup, drop);
@@ -164,6 +179,16 @@ const rideService = {
       bookingSource,
       createdByAdminId,
     });
+
+    if (paymentMethod === 'upi') {
+      await paymentService.recordPrebookPayment({
+        rideId: ride.id,
+        customerId: customer.profileId,
+        amount: quote.total,
+        orderId: payment.orderId,
+        paymentId: payment.paymentId,
+      });
+    }
 
     dispatchService.start(ride).catch((err) => logger.error({ err, rideId: ride.id }, 'dispatch start failed'));
     return enrich(await rideRepo.findById(ride.id));
@@ -342,7 +367,19 @@ const rideService = {
     });
 
     // make sure a payment row exists for the chosen method
-    await paymentService.ensureForRide(rideId, { method: completed.payment_method });
+    const { settled } = await paymentService.ensureForRide(rideId, { method: completed.payment_method });
+
+    // A pre-booked UPI ride was already paid in full before dispatch even
+    // started (see createRide()) — ensureForRide() just found that existing
+    // 'paid' row instead of creating a new pending one. Nothing else will
+    // ever call "confirm payment" for it, so close the loop right here the
+    // same way settleCash()/verifyClientPayment() do, instead of leaving the
+    // ride stuck at PAYMENT_PENDING and telling an already-paid customer an
+    // amount is still due.
+    if (settled) {
+      const result = await paymentService.settleAlreadyPaid(rideId);
+      return enrich(result.ride);
+    }
 
     const customer = await customerRepo.findById(ride.customer_id);
     const drv = await driverRepo.findById(ride.driver_id);

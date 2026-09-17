@@ -2,6 +2,7 @@
 
 const rideService = require('../services/rideService');
 const dispatchService = require('../services/dispatchService');
+const paymentService = require('../services/paymentService');
 const ApiError = require('../utils/apiError');
 
 const requester = (req) => ({
@@ -17,7 +18,7 @@ module.exports = {
   },
 
   async create(req, res) {
-    const { pickup, drop, vehicleCategory, rideType, paymentMethod, promoCode } = req.body;
+    const { pickup, drop, vehicleCategory, rideType, paymentMethod, promoCode, payment } = req.body;
     const ride = await rideService.createRide({
       customer: { profileId: req.auth.profileId, userId: req.auth.userId },
       pickup,
@@ -26,8 +27,24 @@ module.exports = {
       rideType,
       paymentMethod,
       promoCode,
+      payment,
     });
     res.status(201).json({ success: true, ride });
+  },
+
+  /** UPI booking, step 1 — quote the fare and open a Razorpay order for it
+   * before any ride exists. See rideService.createRide() for step 2. */
+  async prebookOrder(req, res) {
+    const { pickup, drop, vehicleCategory, promoCode } = req.body;
+    const order = await paymentService.createPrebookOrder({
+      customerId: req.auth.profileId,
+      userId: req.auth.userId,
+      pickup,
+      drop,
+      vehicleCategory,
+      promoCode,
+    });
+    res.json({ success: true, ...order });
   },
 
   async active(req, res) {
