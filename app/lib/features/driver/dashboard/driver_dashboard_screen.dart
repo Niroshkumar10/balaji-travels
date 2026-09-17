@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../../../core/location/location_providers.dart';
+import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/util/formatters.dart';
 import '../../../core/widgets/common_widgets.dart';
@@ -80,32 +81,51 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
               ),
             ),
             Expanded(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  MapView(
-                    key: _mapKey,
-                    initial: _center,
-                    myLocationEnabled: true,
-                  ),
-                  if (onTrip)
-                    _ResumeTrip(rideId: state.ride!.id, label: state.ride!.status.label)
-                  else
-                    Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: _StatusCard(
-                          online: state.online,
-                          busy: state.busy,
-                          onGoOffline: _goOffline,
-                          earnings: earnings.maybeWhen(
-                            data: (s) => 'Trips today: ${s.trips}  ·  Earned: ${money(s.net)}',
-                            orElse: () => null,
+              child: RefreshIndicator(
+                // Manual fallback for whenever a newly assigned ride (in
+                // particular one created from the Admin Panel, which has no
+                // socket connection of its own and only gets a chance to
+                // notify a live one) hasn't shown up on its own yet — pull
+                // down to force the same fetch loadActive() does on cold
+                // start.
+                onRefresh: () => ref.read(driverControllerProvider.notifier).loadActive(),
+                child: CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          MapView(
+                            key: _mapKey,
+                            initial: _center,
+                            myLocationEnabled: true,
                           ),
-                        ),
+                          if (onTrip)
+                            state.ride!.status == RideStatus.driverAssigned
+                                ? _NewBookingCard(ride: state.ride!, rider: state.rider)
+                                : _ResumeTrip(rideId: state.ride!.id, label: state.ride!.status.label)
+                          else
+                            Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(20),
+                                child: _StatusCard(
+                                  online: state.online,
+                                  busy: state.busy,
+                                  onGoOffline: _goOffline,
+                                  earnings: earnings.maybeWhen(
+                                    data: (s) => 'Trips today: ${s.trips}  ·  Earned: ${money(s.net)}',
+                                    orElse: () => null,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
-                ],
+                  ],
+                ),
               ),
             ),
             if (!onTrip && !state.online)
@@ -189,6 +209,90 @@ class _StatusCard extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// Shown on the dashboard the moment a ride reaches DRIVER_ASSIGNED — same
+/// status a normal accepted offer lands the driver in, but this is the state
+/// where an Admin Panel call-in booking (no Accept step, no Pending Ride
+/// Card — assigned directly, see [[dispatchService]]) is what a driver
+/// notices first, since they were never shown an offer to accept. Pull-to-
+/// refresh above is the fallback if this doesn't appear on its own from the
+/// live socket update.
+///
+/// "Start Journey" continues into the exact same ride screen and the exact
+/// same normal flow (Start navigation to pickup → Enroute → Arrived → OTP →
+/// Start Trip → Complete) as any other assigned ride — this card is only a
+/// clearer entry point into it, not a different flow.
+class _NewBookingCard extends StatelessWidget {
+  const _NewBookingCard({required this.ride, this.rider});
+  final Ride ride;
+  final RiderInfo? rider;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Material(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          elevation: 8,
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.directions_car_filled_rounded, color: AppColors.primary),
+                    const SizedBox(width: 8),
+                    const Text('New booking', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                    const Spacer(),
+                    if (ride.estFare != null)
+                      Text(money(ride.estFare!), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                  ],
+                ),
+                if (rider?.name != null) ...[
+                  const SizedBox(height: 4),
+                  Text(rider!.name, style: const TextStyle(color: AppColors.inkSoft)),
+                ],
+                const SizedBox(height: 14),
+                _AddrLine(icon: Icons.trip_origin_rounded, color: AppColors.success, text: ride.pickupAddr ?? 'Pickup point'),
+                const SizedBox(height: 6),
+                _AddrLine(icon: Icons.place_rounded, color: AppColors.error, text: ride.dropAddr ?? 'Drop point'),
+                const SizedBox(height: 16),
+                PrimaryButton(
+                  label: 'Start Journey',
+                  onPressed: () => context.push('/d/ride/${ride.id}'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AddrLine extends StatelessWidget {
+  const _AddrLine({required this.icon, required this.color, required this.text});
+  final IconData icon;
+  final Color color;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: color),
+        const SizedBox(width: 8),
+        Expanded(child: Text(text, style: const TextStyle(fontSize: 13), maxLines: 2, overflow: TextOverflow.ellipsis)),
+      ],
     );
   }
 }

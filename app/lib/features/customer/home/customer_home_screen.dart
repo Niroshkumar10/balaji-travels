@@ -283,6 +283,22 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
     final session = ref.watch(rideSessionProvider);
     final activeRide = session.ride;
 
+    // A ride the customer never booked themselves in this app session (e.g.
+    // an Admin Panel call-in booking made on their behalf) has no moment
+    // where this app would otherwise navigate to the tracking screen — a
+    // self-booked ride gets pushed there right after createRide() succeeds,
+    // but nothing does that for one that just appears via the socket. Without
+    // this, the only way to ever reach /c/ride/:id (and see the OTP) is
+    // noticing and tapping the small resume banner above. Mirrors the same
+    // fix already in place for the driver's dashboard (driver_shell.dart).
+    ref.listen(rideSessionProvider, (prev, next) {
+      if (next.ride != null &&
+          next.ride!.status.isActive &&
+          prev?.ride?.id != next.ride!.id) {
+        context.push('/c/ride/${next.ride!.id}');
+      }
+    });
+
     // Live GPS — recentre the camera as the rider moves (until they pan away).
     ref.listen(positionStreamProvider, (prev, next) {
       final p = next.valueOrNull;

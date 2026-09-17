@@ -5,13 +5,35 @@ const { z } = require('zod');
 const validate = require('../../middleware/validate');
 const hmacAdmin = require('../../middleware/hmacAdmin');
 const asyncHandler = require('../../utils/asyncHandler');
-const { vehicleCategory } = require('../../utils/validators');
+const { vehicleCategory, paymentMethod, mobile, lat, lng } = require('../../utils/validators');
 const ops = require('../../controllers/opsController');
 
 const router = Router();
 router.use(hmacAdmin);
 
 router.get('/drivers', asyncHandler(ops.listDrivers));
+
+const bookingPlace = z.object({ lat, lng, addr: z.string().trim().max(400).optional() });
+const createBookingBody = z
+  .object({
+    adminId: z.coerce.number().int().positive(),
+    customerId: z.coerce.number().int().positive().optional(),
+    customerMobile: mobile.optional(),
+    pickup: bookingPlace,
+    drop: bookingPlace,
+    vehicleCategory,
+    rideType: z.enum(['local', 'outstation', 'round_trip']).optional(),
+    paymentMethod: paymentMethod.optional(),
+    promoCode: z.string().trim().min(3).max(40).optional(),
+  })
+  .strict()
+  .refine((b) => b.customerId || b.customerMobile, {
+    message: 'customerId or customerMobile is required',
+  });
+
+// Admin/call-in booking — same rideService.createRide() + dispatchService.start()
+// path a normal customer booking uses (see opsController.createBooking).
+router.post('/bookings', validate({ body: createBookingBody }), asyncHandler(ops.createBooking));
 router.post(
   '/drivers/:driverId/kyc',
   validate({ body: z.object({ status: z.enum(['approved', 'rejected', 'suspended', 'pending']), reason: z.string().max(255).optional() }) }),

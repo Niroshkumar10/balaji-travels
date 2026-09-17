@@ -12,6 +12,7 @@ import 'driver_controller.dart';
 import 'earnings/earnings_screen.dart';
 import 'history/driver_history_screen.dart';
 import 'onboarding/onboarding_entry.dart';
+import 'onboarding/registration_checklist_screen.dart';
 import 'profile/driver_profile_screen.dart';
 
 /// The driver app's home: a persistent 4-tab bottom bar (Home · Earnings ·
@@ -89,8 +90,17 @@ class _DriverShellState extends ConsumerState<DriverShell> with WidgetsBindingOb
         body: Center(child: EmptyState(icon: Icons.error_outline_rounded, title: 'Error', subtitle: '$e')),
       ),
       data: (p) {
-        final approved = p != null && p.kycApproved && p.vehicles.any((v) => v.isActive);
-        if (!approved) return const DriverOnboardingEntry();
+        if (p == null || !p.kycApproved) return const DriverOnboardingEntry();
+        // KYC and vehicle are reviewed independently — an admin can approve a
+        // driver's KYC before (or without) them ever adding a vehicle. That's
+        // a real, valid state, not "hasn't started onboarding" — routing it
+        // through DriverOnboardingEntry used to send an already-approved
+        // driver straight to the "let's get started" intro wizard (it decides
+        // which screen to show from on-device storage, which is empty for
+        // this driver's real cause: no vehicle, not a fresh signup). Go
+        // straight to the checklist instead, which already shows exactly one
+        // real remaining step (Vehicle RC) from live backend data.
+        if (!p.vehicles.any((v) => v.isActive)) return const RegistrationChecklistScreen();
         return _shell(context);
       },
     );

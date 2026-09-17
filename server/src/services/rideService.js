@@ -98,7 +98,17 @@ const rideService = {
     };
   },
 
-  async createRide({ customer, pickup, drop, vehicleCategory, rideType = 'local', paymentMethod = 'cash', promoCode }) {
+  async createRide({
+    customer,
+    pickup,
+    drop,
+    vehicleCategory,
+    rideType = 'local',
+    paymentMethod = 'cash',
+    promoCode,
+    bookingSource = 'app',
+    createdByAdminId = null,
+  }) {
     const active = await rideRepo.findActiveForCustomer(customer.profileId);
     if (active) {
       throw ApiError.conflict('You already have an active ride', 'HAS_ACTIVE_RIDE', {
@@ -151,6 +161,8 @@ const rideService = {
       promoId,
       discountAmount,
       paymentMethod,
+      bookingSource,
+      createdByAdminId,
     });
 
     dispatchService.start(ride).catch((err) => logger.error({ err, rideId: ride.id }, 'dispatch start failed'));
@@ -255,12 +267,17 @@ const rideService = {
   },
 
   async driverEnroute(rideId, driverProfileId) {
-    const { ride } = await this._driverEvent(rideId, driverProfileId, 'driver_enroute');
+    // "en_route" status-location: last-known position, never invented — see
+    // driverLocationRepo.getRecentMeta. A stale/missing GPS never blocks the
+    // transition itself, it just means this one gets no location stamped.
+    const meta = await driverLocationRepo.getRecentMeta(driverProfileId);
+    const { ride } = await this._driverEvent(rideId, driverProfileId, 'driver_enroute', { meta });
     return enrich(ride);
   },
 
   async driverArrived(rideId, driverProfileId) {
-    const { ride, customerUserId } = await this._driverEvent(rideId, driverProfileId, 'driver_arrived');
+    const meta = await driverLocationRepo.getRecentMeta(driverProfileId);
+    const { ride, customerUserId } = await this._driverEvent(rideId, driverProfileId, 'driver_arrived', { meta });
     realtime.toUser(customerUserId, 'ride:driver_arrived', { rideId });
     notifyService.notify(customerUserId, {
       type: 'driver_arrived',
@@ -310,9 +327,14 @@ const rideService = {
       promoDiscount: Number(ride.discount_amount ?? 0),
     });
 
+    // "completed" status-location — captured here (drop-off), not later at
+    // payment settlement, since that can happen well after/away from the
+    // actual trip end.
+    const meta = await driverLocationRepo.getRecentMeta(driverProfileId);
+
     const completed = await db.withTransaction(async (tx) => {
       await rideRepo.transition(
-        { rideId, event: 'complete', actorRole: 'driver', actorId: driverProfileId }, tx,
+        { rideId, event: 'complete', actorRole: 'driver', actorId: driverProfileId, meta }, tx,
       );
       await rideRepo.setFinalFare(rideId, { finalFare: finalQuote.total, breakdown: finalQuote.breakdown }, tx);
       await rideRepo.setWaitingMinutes(rideId, waitingMinutes, tx);

@@ -184,9 +184,23 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
               error: (e, _) => EmptyState(icon: Icons.error_outline_rounded, title: 'Error', subtitle: '$e'),
               data: (p) {
                 final hasVehicle = p != null && p.vehicles.isNotEmpty;
+                // A step counts as done if EITHER this device remembers doing
+                // it (_done — the local checklist store) OR the backend
+                // already has that document on file (a re-install, a new
+                // device, or a document uploaded/approved through another
+                // session all clear local storage without undoing real
+                // progress) — local storage alone used to be the only signal,
+                // which is what made an already-approved driver's checklist
+                // look entirely incomplete after nothing more than a fresh
+                // app install.
+                final licenseDone = _done.contains('license') || p?.licenseDocPath != null;
+                final photoDone = _done.contains('photo') || p?.photoPath != null;
+                final identityDone = _done.contains('identity') || p?.idProofDocPath != null;
+                final vehicleDone = hasVehicle &&
+                    (_done.contains('vehicle_rc') || p.activeVehicle?.rcDocPath != null);
                 final List<(String, String, bool, Future<void> Function()?)> items = [
                   ('profile', 'Personal information', p?.name?.isNotEmpty == true, null),
-                  ('license', 'Driving Licence', _done.contains('license'), () => _openDoc(
+                  ('license', 'Driving Licence', licenseDone, () => _openDoc(
                         'license',
                         title: 'Driving Licence',
                         description: "We need your valid driving licence to verify that you're eligible to drive.",
@@ -194,7 +208,7 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
                         uploadLabel: 'Upload Licence',
                         onUsePhoto: (bytes) => _uploadDriverDoc(bytes, docType: 'license'),
                       )),
-                  ('photo', 'Profile picture', _done.contains('photo'), () => _openDoc(
+                  ('photo', 'Profile picture', photoDone, () => _openDoc(
                         'photo',
                         title: 'Add a profile photo',
                         heading: 'Add a profile photo',
@@ -205,8 +219,8 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
                         primaryOpensCamera: true,
                         onUsePhoto: (bytes) => _uploadDriverDoc(bytes, docType: 'photo'),
                       )),
-                  ('identity', 'Identity verification', _done.contains('identity'), _openIdentity),
-                  ('vehicle_rc', 'Vehicle RC', hasVehicle && _done.contains('vehicle_rc'), _openVehicleSequence),
+                  ('identity', 'Identity verification', identityDone, _openIdentity),
+                  ('vehicle_rc', 'Vehicle RC', vehicleDone, _openVehicleSequence),
                 ];
                 final completed = items.where((i) => i.$3 == true).length;
                 final allDone = completed == items.length;

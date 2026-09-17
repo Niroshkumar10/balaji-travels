@@ -6,8 +6,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app.dart';
 import 'core/auth/session.dart';
+import 'core/push/push_navigation.dart';
 import 'core/push/push_service.dart';
 import 'core/widgets/map_markers.dart';
+import 'router.dart';
 import 'state/providers.dart';
 
 Future<void> main() async {
@@ -51,6 +53,22 @@ class _BootState extends ConsumerState<_Boot> {
         await ref.read(authRepoProvider).registerFcmToken(token);
       } catch (_) {/* will retry on next token refresh / login */}
     };
+    PushService.instance.onTap = _handleNotificationTap;
+    // Delivers a tap that launched the app from fully closed, if there was
+    // one — safe to call unconditionally, it's a no-op otherwise.
+    PushService.instance.deliverPendingTap();
+  }
+
+  void _handleNotificationTap(Map<String, dynamic> data) {
+    final path = routeForNotification(data, ref.read(sessionProvider).role);
+    if (path == null) return;
+    // Deferred to after the current frame so this is safe to call from
+    // initState (router/navigator may not be mounted yet) as well as from a
+    // tap that arrives while the app is already running.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(routerProvider).push(path);
+    });
   }
 
   @override

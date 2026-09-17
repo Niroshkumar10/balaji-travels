@@ -11,6 +11,9 @@ const db = require('../infra/db');
 const ApiError = require('../utils/apiError');
 const driverRepo = require('../repositories/driverRepo');
 const fareConfigRepo = require('../repositories/fareConfigRepo');
+const userRepo = require('../repositories/userRepo');
+const customerRepo = require('../repositories/customerRepo');
+const rideService = require('../services/rideService');
 
 module.exports = {
   async listDrivers(req, res) {
@@ -67,6 +70,49 @@ module.exports = {
       cancellationFee: b.cancellationFee ?? 0,
     });
     res.json({ success: true });
+  },
+
+  /**
+   * Admin/phone (call-in) booking — creates a ride through the EXACT same
+   * rideService.createRide() → dispatchService.start() path a normal
+   * customer booking uses. No offer/OTP/dispatch logic is duplicated here;
+   * this only resolves which customer the ride is for and tags the source.
+   */
+  async createBooking(req, res) {
+    const b = req.body;
+
+    let customer = null;
+    if (b.customerId) {
+      customer = await customerRepo.findById(Number(b.customerId));
+    } else if (b.customerMobile) {
+      const user = await userRepo.findByMobileAndRole(b.customerMobile, 'customer');
+      if (user) customer = await customerRepo.findByUserId(user.id);
+    }
+    if (!customer) throw ApiError.notFound('Customer not found — check customerId/customerMobile', 'CUSTOMER_NOT_FOUND');
+
+    const ride = await rideService.createRide({
+      customer: { profileId: customer.id, userId: customer.user_id },
+      pickup: b.pickup,
+      drop: b.drop,
+      vehicleCategory: b.vehicleCategory,
+      rideType: b.rideType,
+      paymentMethod: b.paymentMethod,
+      promoCode: b.promoCode,
+      bookingSource: 'admin_call',
+      createdByAdminId: b.adminId,
+    });
+
+    await db.query(
+      `INSERT INTO rt_admin_audit (admin_id, action, entity, entity_id, before_val, after_val)
+       VALUES (:adminId, 'booking_create', 'ride', :rideId, NULL, :after)`,
+      {
+        adminId: b.adminId,
+        rideId: String(ride.id),
+        after: JSON.stringify({ customerId: customer.id, vehicleCategory: b.vehicleCategory, status: ride.status }),
+      },
+    );
+
+    res.status(201).json({ success: true, ride });
   },
 
   async listRides(req, res) {

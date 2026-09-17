@@ -325,7 +325,11 @@ async function handleOfferResponse(rideId, driverId, accept) {
       const drv = await driverRepo.findById(driverId, tx);
       const vehId = drv?.current_vehicle_id ?? null;
 
-      const won = await rideRepo.atomicAssign({ rideId, driverId, vehicleId: vehId }, tx);
+      const cand = s.queue[s.idx];
+      const won = await rideRepo.atomicAssign(
+        { rideId, driverId, vehicleId: vehId, lat: cand?.lat, lng: cand?.lng },
+        tx,
+      );
       if (!won) return { ok: false, reason: 'taken' };
 
       await rideOfferRepo.markResponded(rideId, driverId, 'accepted', tx);

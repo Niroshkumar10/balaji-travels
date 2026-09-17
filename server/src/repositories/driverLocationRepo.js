@@ -201,6 +201,23 @@ const driverLocationRepo = {
     };
   },
 
+  /**
+   * `{ latitude, longitude }` from the driver's last-known position, for
+   * stamping rt_ride_status_history.meta at a ride milestone (accepted,
+   * en_route, arrived, completed — see rideService.js/dispatchService.js).
+   * Returns null if there's no location on file, or it's older than
+   * `staleSeconds` (same freshness bar `nearby()` already uses for dispatch
+   * matching) — callers must treat null as "GPS temporarily unavailable"
+   * and proceed with the status transition anyway, never invent coordinates.
+   */
+  async getRecentMeta(driverId, { staleSeconds = env.DRIVER_LOCATION_STALE_SECONDS } = {}, ctx = db) {
+    const row = await this.get(driverId, ctx);
+    if (!row || row.lat == null || row.lng == null) return null;
+    const ageMs = Date.now() - new Date(row.updated_at).getTime();
+    if (ageMs > staleSeconds * 1000) return null;
+    return { latitude: Number(row.lat), longitude: Number(row.lng) };
+  },
+
   /** Append a throttled breadcrumb during an active ride. */
   async logBreadcrumb(driverId, rideId, { lat, lng, bearing, speedKmph }, ctx = db) {
     await ctx.query(

@@ -9,4 +9,8 @@ class PushService {
   Future<void> init() async {
     // nothing: browsers in this test build don't receive FCM pushes
   }
+
+  void deliverPendingTap() {
+    // nothing: no local notifications on web, so no pending tap either
+  }
 }

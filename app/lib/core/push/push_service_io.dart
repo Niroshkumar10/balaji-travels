@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
@@ -26,8 +28,17 @@ class PushService {
   /// Called with a fresh FCM token (on init and on refresh).
   void Function(String token)? onToken;
 
-  /// Called when the user taps a notification (payload = message.data).
+  /// Called when the user taps a notification (payload = the original FCM
+  /// `data` map — type, rideId, etc.).
   void Function(Map<String, dynamic> data)? onTap;
+
+  /// A tap that happened before [onTap] was wired up — e.g. the app was
+  /// fully killed and got launched BY tapping a notification, which happens
+  /// during [init] (called from main() before runApp()), long before
+  /// anything has had a chance to set [onTap]. The caller should set
+  /// [onTap] first, then call [deliverPendingTap] once (after the first
+  /// frame, so navigation has somewhere to go).
+  Map<String, dynamic>? _pendingTap;
 
   static const _channel = AndroidNotificationChannel(
     'rt_rides',
@@ -50,18 +61,31 @@ class PushService {
         iOS: DarwinInitializationSettings(),
       ),
       onDidReceiveNotificationResponse: (r) {
-        final payload = r.payload;
-        if (payload != null) onTap?.call({'raw': payload});
+        final data = _decode(r.payload);
+        if (data != null) onTap?.call(data);
       },
     );
     await _local
         .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(_channel);
 
+    // The app was fully closed and got launched BY tapping a notification —
+    // onDidReceiveNotificationResponse above never fires for this case, so
+    // it has to be picked up here instead. onTap isn't wired yet this early
+    // (init() runs in main(), before runApp()), so stash it for the caller
+    // to deliver once it is — see deliverPendingTap().
+    final launchDetails = await _local.getNotificationAppLaunchDetails();
+    if (launchDetails?.didNotificationLaunchApp == true) {
+      _pendingTap = _decode(launchDetails!.notificationResponse?.payload);
+    }
+
     final messaging = FirebaseMessaging.instance;
     await messaging.requestPermission();
     FirebaseMessaging.onBackgroundMessage(_bgHandler);
     FirebaseMessaging.onMessage.listen((m) => _showLocal(m.data));
+    // Data-only messages (see class doc) never carry the `notification`
+    // block Android/iOS needs to route a tap here on their own — this fires
+    // in practice only if that ever changes. Kept as a harmless extra path.
     FirebaseMessaging.onMessageOpenedApp.listen((m) => onTap?.call(m.data));
 
     final token = await messaging.getToken();
@@ -69,6 +93,26 @@ class PushService {
     messaging.onTokenRefresh.listen((t) => onToken?.call(t));
 
     _ready = true;
+  }
+
+  /// Call once, after wiring [onTap], to deliver a tap that launched the app
+  /// from fully closed (missed above because [onTap] wasn't set yet).
+  /// No-op if there wasn't one.
+  void deliverPendingTap() {
+    final data = _pendingTap;
+    if (data == null) return;
+    _pendingTap = null;
+    onTap?.call(data);
+  }
+
+  Map<String, dynamic>? _decode(String? payload) {
+    if (payload == null || payload.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(payload);
+      return decoded is Map ? decoded.map((k, v) => MapEntry(k.toString(), v)) : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _showLocal(Map<String, dynamic> data) async {
@@ -91,7 +135,9 @@ class PushService {
         ),
         iOS: const DarwinNotificationDetails(),
       ),
-      payload: data['rideId']?.toString(),
+      // The full data map round-trips through the payload so a tap can
+      // route correctly (type + rideId, not just rideId) — see _decode.
+      payload: jsonEncode(data),
     );
   }
 }

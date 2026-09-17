@@ -102,8 +102,13 @@ const schema = z
 
     // Platform commission on each completed ride's fare (percent).
     COMMISSION_PCT: int(20).pipe(z.number().int().min(0).max(90)),
-    // Throttle for persisting the driver breadcrumb trail during a ride.
-    TRACK_LOG_MIN_INTERVAL_MS: int(5000),
+    // Throttle for persisting the driver breadcrumb trail (rt_driver_location_logs)
+    // during a ride — purely time-based (see trackingService.relay): a 40-minute
+    // ride at the 30s default samples to ~80 rows. TRACK_LOG_MIN_MOVE_M is no
+    // longer consulted by that gate (kept, unused, in case a future caller wants
+    // a movement-based throttle elsewhere) — a fixed cadence is what history/
+    // dispute-resolution needs, not "only when the driver moved."
+    TRACK_LOG_MIN_INTERVAL_MS: int(30_000),
     TRACK_LOG_MIN_MOVE_M: int(40),
   })
   .superRefine((val, ctx) => {

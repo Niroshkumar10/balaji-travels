@@ -15,17 +15,22 @@ const RIDE_COLS = `id, ride_ref, customer_id, driver_id, vehicle_id, status, rid
 
 const rideRepo = {
   async create(data, ctx = db) {
+    // bookingSource/createdByAdminId default to today's behaviour (column
+    // default 'app' / NULL) — every existing caller that doesn't pass them
+    // is completely unaffected. Only the admin-booking path sets them.
     const res = await ctx.query(
       `INSERT INTO rt_rides
          (customer_id, status, ride_type, vehicle_category,
           pickup_lat, pickup_lng, pickup_addr, drop_lat, drop_lng, drop_addr,
           route_polyline, distance_m, duration_s, est_fare, fare_breakdown,
-          fare_config_id, promo_id, discount_amount, payment_method)
+          fare_config_id, promo_id, discount_amount, payment_method,
+          booking_source, created_by_admin_id)
        VALUES
          (:customerId, 'REQUESTED', :rideType, :vehicleCategory,
           :pickupLat, :pickupLng, :pickupAddr, :dropLat, :dropLng, :dropAddr,
           :routePolyline, :distanceM, :durationS, :estFare, :fareBreakdown,
-          :fareConfigId, :promoId, :discountAmount, :paymentMethod)`,
+          :fareConfigId, :promoId, :discountAmount, :paymentMethod,
+          :bookingSource, :createdByAdminId)`,
       {
         customerId: data.customerId,
         rideType: data.rideType ?? 'local',
@@ -45,6 +50,8 @@ const rideRepo = {
         promoId: data.promoId ?? null,
         discountAmount: data.discountAmount ?? 0,
         paymentMethod: data.paymentMethod ?? null,
+        bookingSource: data.bookingSource ?? 'app',
+        createdByAdminId: data.createdByAdminId ?? null,
       },
     );
     const id = res.insertId;
@@ -103,7 +110,7 @@ const rideRepo = {
    * requires the ride to still be unclaimed, and the driver to still be free.
    * @returns {Promise<boolean>} true if THIS caller won.
    */
-  async atomicAssign({ rideId, driverId, vehicleId }, ctx = db) {
+  async atomicAssign({ rideId, driverId, vehicleId, lat, lng }, ctx = db) {
     const rideUpd = await ctx.query(
       `UPDATE rt_rides
           SET driver_id = :driverId, vehicle_id = :vehicleId,
@@ -129,10 +136,19 @@ const rideRepo = {
       return false;
     }
 
+    // "accepted" status-location: the candidate's lat/lng is already on hand
+    // from the dispatch nearby-query that selected them (see dispatchService's
+    // handleOfferResponse) — never a fake/invented value, and never a fresh
+    // query, since it's what dispatch itself just used to offer this driver.
+    const meta = { via: 'atomic_assign' };
+    if (lat != null && lng != null) {
+      meta.latitude = Number(lat);
+      meta.longitude = Number(lng);
+    }
     await ctx.query(
       `INSERT INTO rt_ride_status_history (ride_id, from_status, to_status, actor, actor_id, meta)
-       VALUES (:rideId, 'SEARCHING_DRIVER', 'DRIVER_ASSIGNED', 'system', :driverId, JSON_OBJECT('via','atomic_assign'))`,
-      { rideId, driverId },
+       VALUES (:rideId, 'SEARCHING_DRIVER', 'DRIVER_ASSIGNED', 'system', :driverId, :meta)`,
+      { rideId, driverId, meta: JSON.stringify(meta) },
     );
     return true;
   },
