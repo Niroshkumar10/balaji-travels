@@ -81,7 +81,13 @@ class MapViewState extends State<MapView> {
   GoogleMapController? _controller;
   GoogleMapController? get controller => _controller;
 
-  Future<void> fitTo(Iterable<LatLng> pts, {double padding = 60}) async {
+  /// [minZoom], if given, is a floor on how far OUT the fit is allowed to
+  /// zoom — for a long-distance route (e.g. an outstation trip spanning
+  /// several states), fitting both points exactly can zoom out to a
+  /// whole-subcontinent view where the pins are barely visible specks. This
+  /// re-centres on the bounds' midpoint at that floor zoom instead, trading
+  /// "both points guaranteed on screen" for "still looks like a usable map."
+  Future<void> fitTo(Iterable<LatLng> pts, {double padding = 60, double? minZoom}) async {
     final list = pts
         .where((p) => MapView.isRealLatLng(p.latitude, p.longitude))
         .toList();
@@ -109,6 +115,16 @@ class MapViewState extends State<MapView> {
         await _controller
             ?.animateCamera(CameraUpdate.newLatLngBounds(bounds, padding));
       } catch (_) {/* leave the camera where it is */}
+    }
+    if (minZoom != null && _controller != null) {
+      final zoom = await _controller!.getZoomLevel();
+      if (zoom < minZoom) {
+        final mid = LatLng(
+          (bounds.northeast.latitude + bounds.southwest.latitude) / 2,
+          (bounds.northeast.longitude + bounds.southwest.longitude) / 2,
+        );
+        await moveTo(mid, zoom: minZoom);
+      }
     }
   }
 
