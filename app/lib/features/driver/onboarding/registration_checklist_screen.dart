@@ -142,6 +142,15 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
   }
 
   Future<void> _openVehicleSequence() async {
+    // Vehicle details first — it's what actually creates the rt_vehicles
+    // row (ProfileRepository.addVehicle). The RC upload has to come after:
+    // the backend's uploadVehicleDocument requires a vehicle to already be
+    // on file, and used to fail with "No vehicle on file for this driver
+    // yet" because this screen order had the RC photo uploading before any
+    // vehicle existed to attach it to.
+    final detailsOk = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const VehicleDetailsScreen()));
+    if (detailsOk != true || !mounted) return;
+
     final vehicleOk = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
@@ -172,9 +181,6 @@ class _RegistrationChecklistScreenState extends ConsumerState<RegistrationCheckl
       ),
     );
     if (vehicleOk != true || !mounted) return;
-
-    final detailsOk = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const VehicleDetailsScreen()));
-    if (detailsOk != true || !mounted) return;
 
     final insuranceOk = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const InsuranceScreen()));
     if (insuranceOk != true || !mounted) return;
