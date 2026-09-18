@@ -99,6 +99,10 @@ const schema = z
     // announced. The Admin Panel writes rt_rides directly and has no
     // Socket.IO connection of its own, so this app has to notice the change.
     ADMIN_BOOKING_POLL_MS: int(4000),
+    // How often to check for scheduled rides whose pickup time has arrived
+    // (see jobs/scheduledDispatch.js) — a scheduled ride isn't time-critical
+    // the way a live GPS ping is, so a slower poll than the two above is fine.
+    SCHEDULED_DISPATCH_POLL_MS: int(30_000),
 
     // Platform commission on each completed ride's fare (percent).
     COMMISSION_PCT: int(20).pipe(z.number().int().min(0).max(90)),

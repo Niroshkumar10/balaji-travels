@@ -58,6 +58,57 @@ class MapView extends StatefulWidget {
     return points;
   }
 
+  /// Splits a decoded route at the point nearest [pos] — the "already
+  /// covered" part (start..split) and the "remaining" part (split..end).
+  /// Used to draw the crossed vs. still-to-go stretch of a trip in different
+  /// polyline styles. Treats lat/lng as planar, which is accurate enough at
+  /// city-trip scale.
+  static (List<LatLng> covered, List<LatLng> remaining) splitAtNearest(
+    List<LatLng> route,
+    LatLng pos,
+  ) {
+    if (route.length < 2) return (const [], route);
+    var bestSeg = 0;
+    var bestT = 0.0;
+    var bestDist = double.infinity;
+    for (var i = 0; i < route.length - 1; i++) {
+      final a = route[i], b = route[i + 1];
+      final t = _projectT(a, b, pos);
+      final proj = LatLng(
+        a.latitude + (b.latitude - a.latitude) * t,
+        a.longitude + (b.longitude - a.longitude) * t,
+      );
+      final d = _sqDist(proj, pos);
+      if (d < bestDist) {
+        bestDist = d;
+        bestSeg = i;
+        bestT = t;
+      }
+    }
+    final a = route[bestSeg], b = route[bestSeg + 1];
+    final split = LatLng(
+      a.latitude + (b.latitude - a.latitude) * bestT,
+      a.longitude + (b.longitude - a.longitude) * bestT,
+    );
+    final covered = [...route.sublist(0, bestSeg + 1), split];
+    final remaining = [split, ...route.sublist(bestSeg + 1)];
+    return (covered, remaining);
+  }
+
+  /// Fraction along segment a→b closest to p, clamped to the segment.
+  static double _projectT(LatLng a, LatLng b, LatLng p) {
+    final dx = b.longitude - a.longitude, dy = b.latitude - a.latitude;
+    final len2 = dx * dx + dy * dy;
+    if (len2 == 0) return 0;
+    final t = ((p.longitude - a.longitude) * dx + (p.latitude - a.latitude) * dy) / len2;
+    return t.clamp(0.0, 1.0);
+  }
+
+  static double _sqDist(LatLng a, LatLng b) {
+    final dx = a.longitude - b.longitude, dy = a.latitude - b.latitude;
+    return dx * dx + dy * dy;
+  }
+
   static LatLngBounds boundsOf(Iterable<LatLng> pts) {
     final lats = pts.map((p) => p.latitude);
     final lngs = pts.map((p) => p.longitude);

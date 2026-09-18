@@ -13,6 +13,8 @@ import 'features/customer/notifications/notifications_screen.dart';
 import 'features/customer/offers/offers_screen.dart';
 import 'features/customer/outstation/outstation_plan_screen.dart';
 import 'features/customer/outstation/trip_review_screen.dart';
+import 'features/customer/rental/rental_package_screen.dart';
+import 'features/customer/rental/rental_plan_screen.dart';
 import 'features/customer/payment/payment_screen.dart';
 import 'features/customer/profile/customer_profile_screen.dart';
 import 'features/customer/rating/rating_screen.dart';
@@ -150,6 +152,14 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/c/plan-trip',
         builder: (_, s) => OutstationPlanScreen(args: s.extra as OutstationPlanArgs),
+      ),
+      GoRoute(
+        path: '/c/rental-plan',
+        builder: (_, s) => RentalPlanScreen(args: s.extra as RentalPlanArgs),
+      ),
+      GoRoute(
+        path: '/c/rental-packages',
+        builder: (_, s) => RentalPackageScreen(args: s.extra as RentalPackageArgs),
       ),
       GoRoute(path: '/c/saved-places', builder: (_, __) => const SavedPlacesScreen()),
       GoRoute(path: '/c/profile', builder: (_, __) => const CustomerProfileScreen()),

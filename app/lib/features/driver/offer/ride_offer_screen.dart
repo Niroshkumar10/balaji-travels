@@ -184,6 +184,28 @@ class _State extends ConsumerState<RideOfferScreen> {
                             style: Theme.of(context).textTheme.titleMedium),
                       ],
                     ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        const CircleAvatar(
+                          radius: 18,
+                          backgroundColor: AppColors.canvas,
+                          child: Icon(Icons.person, color: AppColors.inkSoft, size: 20),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(offer.customerName, style: const TextStyle(fontWeight: FontWeight.w700)),
+                              if (offer.customerPhoneMasked != null)
+                                Text(offer.customerPhoneMasked!,
+                                    style: const TextStyle(color: AppColors.inkSoft, fontSize: 12.5)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                     const Divider(height: 24),
                     _AddrRow(
                       icon: Icons.trip_origin,

@@ -2,16 +2,34 @@ import 'package:flutter/material.dart';
 
 /// One selectable vehicle-type group in the Rental/Outstation picker
 /// (Urbania, Tempo Traveller, Car, Bus), each with its own seater/model
-/// variants. This taxonomy is specific to group/outstation travel and is
-/// separate from the bike/auto/hatchback/sedan/suv categories the local-ride
-/// fare engine already knows — there is no backend pricing for it yet, so
-/// picking one carries a label forward for the rider/ops team rather than
-/// driving an automated fare quote.
+/// variants.
 class VehicleCategory {
   const VehicleCategory({required this.icon, required this.label, required this.variants});
   final IconData icon;
   final String label;
   final List<String> variants;
+}
+
+/// Maps a Rental vehicle pick to the closest real backend fare category —
+/// same honest tradeoff already used for Outstation's fleet list (see
+/// trip_review_screen.dart's `_Fleet`): the backend only has fare configs
+/// for bike/auto/hatchback/sedan/suv, so it has no per-vehicle-name pricing
+/// for "Urbania" or "Jaguar" to quote. Vehicles mapped to the same category
+/// necessarily show the same package price — honest given what the backend
+/// can actually price, rather than an invented per-vehicle number that
+/// would silently diverge from what booking actually charges.
+String rentalBookingCategory(String categoryLabel, String variant) {
+  switch (categoryLabel) {
+    case 'Car':
+      if (variant.contains('Dzire') || variant.contains('Etios')) return 'hatchback';
+      if (variant.contains('Ciaz') || variant.contains('Jaguar')) return 'sedan';
+      return 'suv'; // Ertiga, Innova/Crysta/Hycross, Fortuner
+    case 'Urbania':
+    case 'Tempo Traveller':
+    case 'Bus':
+    default:
+      return 'suv'; // the largest existing category — closest fit for group/fleet vehicles
+  }
 }
 
 class VehicleCatalog {

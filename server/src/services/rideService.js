@@ -11,6 +11,7 @@ const adminAssignmentService = require('./adminAssignmentService');
 const { serviceFor } = require('../utils/serviceType');
 const paymentService = require('./paymentService');
 const notifyService = require('./notifyService');
+const rentalService = require('./rentalService');
 const realtime = require('../realtime/emitter');
 const rideRepo = require('../repositories/rideRepo');
 const customerRepo = require('../repositories/customerRepo');
@@ -116,6 +117,13 @@ const rideService = {
     // before anything is created, so a driver can never be offered a ride
     // for a payment that failed, was cancelled, or was never made.
     payment,
+    // Required when rideType is 'rental' — one of rentalService.PACKAGE_HOURS.
+    rentalPackageHours,
+    // Optional on any ride type — a future pickup time. When it's more than
+    // a couple of minutes out, dispatch is held back instead of starting
+    // immediately; jobs/scheduledDispatch.js starts it (via the exact same
+    // dispatchService.start() below) once that time arrives.
+    scheduledAt,
   }) {
     const active = await rideRepo.findActiveForCustomer(customer.profileId);
     if (active) {
@@ -134,12 +142,29 @@ const rideService = {
       paymentService.verifyPrebookSignature(payment);
     }
 
+    // geo.route() still runs for every ride type — the map/polyline is still
+    // worth showing even for a rental, whose FARE is not distance-based.
     const route = await geo.route(pickup, drop);
-    let quote = await fareService.quote({
-      category: vehicleCategory,
-      distanceM: route.distanceM,
-      durationS: route.durationS,
-    });
+
+    // Rental: fare comes from the fixed package (hours + included km) the
+    // customer picked on the package-selection screen, quoted fresh here via
+    // the exact same fareService.quote() every other ride uses — never the
+    // real pickup→drop route distance, and never a client-supplied amount.
+    const isRental = rideType === 'rental';
+    let packageQuote = null;
+    if (isRental) {
+      packageQuote = await rentalService.quoteOnePackage({ category: vehicleCategory, hours: rentalPackageHours });
+    }
+    const rideDistanceM = isRental ? packageQuote.distanceM : route.distanceM;
+    const rideDurationS = isRental ? packageQuote.durationS : route.durationS;
+
+    let quote = isRental
+      ? packageQuote
+      : await fareService.quote({
+          category: vehicleCategory,
+          distanceM: rideDistanceM,
+          durationS: rideDurationS,
+        });
 
     let promoId = null;
     let discountAmount = 0;
@@ -153,8 +178,8 @@ const rideService = {
       discountAmount = p.discount;
       quote = await fareService.quote({
         category: vehicleCategory,
-        distanceM: route.distanceM,
-        durationS: route.durationS,
+        distanceM: rideDistanceM,
+        durationS: rideDurationS,
         promoDiscount: discountAmount,
       });
     }
@@ -170,8 +195,8 @@ const rideService = {
       dropLng: drop.lng,
       dropAddr: drop.addr ?? null,
       routePolyline: route.polyline,
-      distanceM: route.distanceM,
-      durationS: route.durationS,
+      distanceM: rideDistanceM,
+      durationS: rideDurationS,
       estFare: quote.total,
       fareBreakdown: quote.breakdown,
       fareConfigId: quote.config_id,
@@ -180,6 +205,8 @@ const rideService = {
       paymentMethod,
       bookingSource,
       createdByAdminId,
+      rentalPackageHours: isRental ? rentalPackageHours : null,
+      scheduledAt: scheduledAt ?? null,
     });
 
     if (paymentMethod === 'upi') {
@@ -192,12 +219,26 @@ const rideService = {
       });
     }
 
-    // Local rides auto-dispatch to the nearest matching driver. Rental and
-    // outstation (+ round trip) skip that cascade entirely and wait for an
-    // ops admin to hand-pick a driver — see adminAssignmentService.
     if (serviceFor(rideType) === 'local') {
-      dispatchService.start(ride).catch((err) => logger.error({ err, rideId: ride.id }, 'dispatch start failed'));
+      // A ride scheduled more than a couple of minutes out stays at
+      // REQUESTED (its normal first status) — jobs/scheduledDispatch.js
+      // calls this exact same dispatchService.start() once the time is
+      // close, instead of a second dispatch path. Anything sooner (or no
+      // schedule at all) behaves exactly as before: dispatch starts
+      // immediately.
+      const holdForLater = scheduledAt && new Date(scheduledAt).getTime() - Date.now() > 2 * 60 * 1000;
+      if (!holdForLater) {
+        dispatchService.start(ride).catch((err) => logger.error({ err, rideId: ride.id }, 'dispatch start failed'));
+      }
     } else {
+      // Rental and outstation (+ round trip) skip the auto-dispatch cascade
+      // entirely — an ops admin hand-picks a driver instead (see
+      // adminAssignmentService). Queued for admin immediately even when
+      // scheduled for later: manual assignment needs lead time, unlike the
+      // nearest-driver auto-cascade above, so there's no "hold" here —
+      // queueForAdmin's REQUESTED → PENDING_ADMIN_ASSIGNMENT transition
+      // also takes it out of scheduledDispatch.js's REQUESTED-only query,
+      // so the two paths never double-handle the same ride.
       adminAssignmentService
         .queueForAdmin(ride)
         .catch((err) => logger.error({ err, rideId: ride.id }, 'queueForAdmin failed'));

@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/location/location_providers.dart';
 import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/util/formatters.dart';
@@ -61,6 +63,52 @@ class _State extends ConsumerState<DriverRideScreen> {
     if (mounted && err != null) showError(context, err);
   }
 
+  /// Same crossed/remaining split as the customer's tracking screen (see
+  /// [MapView.splitAtNearest]), driven here by the driver's own GPS stream
+  /// instead of a socket-relayed position.
+  Set<Polyline> _routePolylines(Ride ride, Position? myPos) {
+    if (ride.polyline == null || ride.polyline!.isEmpty) return const {};
+    final route = MapView.decodePolyline(ride.polyline!);
+    final onTrip = ride.status == RideStatus.rideStarted ||
+        ride.status == RideStatus.rideInProgress;
+    if (onTrip && myPos != null) {
+      final (covered, remaining) = MapView.splitAtNearest(
+        route,
+        LatLng(myPos.latitude, myPos.longitude),
+      );
+      return {
+        if (covered.length > 1)
+          Polyline(
+            polylineId: const PolylineId('route_covered'),
+            points: covered,
+            color: AppColors.mapRoute,
+            width: 5,
+            patterns: [PatternItem.dot, PatternItem.gap(10)],
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+          ),
+        Polyline(
+          polylineId: const PolylineId('route_remaining'),
+          points: remaining,
+          color: AppColors.mapRoute,
+          width: 5,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+        ),
+      };
+    }
+    return {
+      Polyline(
+        polylineId: const PolylineId('route'),
+        points: route,
+        color: AppColors.mapRoute,
+        width: 5,
+        startCap: Cap.roundCap,
+        endCap: Cap.roundCap,
+      ),
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     ref.listen(driverControllerProvider, (prev, next) {
@@ -71,6 +119,7 @@ class _State extends ConsumerState<DriverRideScreen> {
       }
     });
     final state = ref.watch(driverControllerProvider);
+    final myPos = ref.watch(positionStreamProvider).valueOrNull;
     final ride = state.ride;
 
     if (ride == null) {
@@ -87,11 +136,11 @@ class _State extends ConsumerState<DriverRideScreen> {
       onPopInvokedWithResult: (didPop, result) {
         if (!didPop) context.go('/d/dashboard');
       },
-      child: _buildScaffold(context, state, ride),
+      child: _buildScaffold(context, state, ride, myPos),
     );
   }
 
-  Widget _buildScaffold(BuildContext context, DriverState state, Ride ride) {
+  Widget _buildScaffold(BuildContext context, DriverState state, Ride ride, Position? myPos) {
     final s = ride.status;
     final toPickup = s == RideStatus.driverAssigned ||
         s == RideStatus.driverArriving ||
@@ -132,17 +181,7 @@ class _State extends ConsumerState<DriverRideScreen> {
                   anchor: const Offset(0.5, 0.5),
                 ),
             },
-            polylines: {
-              if (ride.polyline != null && ride.polyline!.isNotEmpty)
-                Polyline(
-                  polylineId: const PolylineId('route'),
-                  points: MapView.decodePolyline(ride.polyline!),
-                  color: AppColors.mapRoute,
-                  width: 5,
-                  startCap: Cap.roundCap,
-                  endCap: Cap.roundCap,
-                ),
-            },
+            polylines: _routePolylines(ride, myPos),
           ),
           SafeArea(
             child: Padding(
@@ -495,6 +534,8 @@ class _RiderRow extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(rider.name, style: const TextStyle(fontWeight: FontWeight.w700)),
+              if (rider.phoneMasked != null)
+                Text(rider.phoneMasked!, style: const TextStyle(color: AppColors.inkSoft, fontSize: 12.5)),
               if (rider.rating != null)
                 Row(
                   children: [

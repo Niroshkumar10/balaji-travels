@@ -61,6 +61,52 @@ class _RideTrackingScreenState extends ConsumerState<RideTrackingScreen>
       s == RideStatus.rideStarted ||
       s == RideStatus.rideInProgress;
 
+  /// The route line(s) to draw. Once the trip itself is under way (driver
+  /// picked the rider up, heading to the destination), split the stored
+  /// pickup→drop route at the driver's live position: solid red for what's
+  /// left, dotted red for the stretch already covered. Before pickup the
+  /// driver isn't on this route yet (they're heading to the pickup point),
+  /// so it's shown whole, same as always.
+  Set<Polyline> _routePolylines(Ride ride) {
+    if (ride.polyline == null || ride.polyline!.isEmpty) return const {};
+    final route = MapView.decodePolyline(ride.polyline!);
+    final onTrip = ride.status == RideStatus.rideStarted ||
+        ride.status == RideStatus.rideInProgress;
+    if (onTrip && _driver.hasValue) {
+      final (covered, remaining) = MapView.splitAtNearest(route, _driver.value!);
+      return {
+        if (covered.length > 1)
+          Polyline(
+            polylineId: const PolylineId('route_covered'),
+            points: covered,
+            color: AppColors.mapRoute,
+            width: 5,
+            patterns: [PatternItem.dot, PatternItem.gap(10)],
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+          ),
+        Polyline(
+          polylineId: const PolylineId('route_remaining'),
+          points: remaining,
+          color: AppColors.mapRoute,
+          width: 5,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+        ),
+      };
+    }
+    return {
+      Polyline(
+        polylineId: const PolylineId('route'),
+        points: route,
+        color: AppColors.mapRoute,
+        width: 5,
+        startCap: Cap.roundCap,
+        endCap: Cap.roundCap,
+      ),
+    };
+  }
+
   void _onStatusChanged(RideStatus s) {
     if (s == RideStatus.driverCompleted || s == RideStatus.paymentPending) {
       context.go('/c/pay/${widget.rideId}');
@@ -161,17 +207,7 @@ class _RideTrackingScreenState extends ConsumerState<RideTrackingScreen>
         ),
     };
 
-    final polylines = <Polyline>{
-      if (ride.polyline != null && ride.polyline!.isNotEmpty)
-        Polyline(
-          polylineId: const PolylineId('route'),
-          points: MapView.decodePolyline(ride.polyline!),
-          color: AppColors.mapRoute,
-          width: 5,
-          startCap: Cap.roundCap,
-          endCap: Cap.roundCap,
-        ),
-    };
+    final polylines = _routePolylines(ride);
 
     if (!_initialFramed) {
       _initialFramed = true;

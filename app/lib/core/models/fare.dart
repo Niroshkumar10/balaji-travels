@@ -45,6 +45,34 @@ class FareOption {
       );
 }
 
+/// One tier from `GET /rides/rental-packages` — priced off the exact same
+/// backend formula as every other fare (see server/src/services/
+/// rentalService.js), for whichever bike/auto/hatchback/sedan/suv category
+/// the picked Rental vehicle maps to (see vehicle_catalog.dart's
+/// `rentalBookingCategory`).
+class RentalPackage {
+  const RentalPackage({
+    required this.hours,
+    required this.includedKm,
+    required this.fare,
+    this.currency = 'INR',
+  });
+
+  final int hours;
+  final int includedKm;
+  final double fare;
+  final String currency;
+
+  String get label => '$hours hr${hours > 1 ? 's' : ''} · $includedKm km';
+
+  factory RentalPackage.fromJson(Map<String, dynamic> j) => RentalPackage(
+        hours: asInt(j['hours']),
+        includedKm: asInt(j['includedKm']),
+        fare: asDouble(j['fare']),
+        currency: j['currency']?.toString() ?? 'INR',
+      );
+}
+
 class RideEstimate {
   const RideEstimate({required this.route, required this.options});
 

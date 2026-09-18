@@ -100,6 +100,14 @@ async function buildQueue(ride, excludeIds = new Set(), radiusKm = RADIUS_KM) {
     `Found     : ${rows.length} matching  →  queued ${queue.length}`,
     ...queue.map((c, i) => `  ${i + 1}. driver ${c.driverId}   ${km(c.distanceM)} from pickup`),
   ]);
+  // Structured, greppable companion to the block above — same data, one line.
+  L.event('📋', 'candidate queue built', {
+    rideId: ride.id,
+    radiusKm,
+    queueLength: queue.length,
+    driverIds: queue.map((c) => c.driverId),
+    distancesM: queue.map((c) => c.distanceM),
+  });
   return queue;
 }
 
@@ -159,6 +167,7 @@ async function start(ride) {
   );
 
   const customer = await customerRepo.findById(ride.customer_id);
+  const customerUser = await userRepo.findById(customer.user_id);
   realtime.toUser(customer.user_id, 'ride:searching', { rideId: ride.id, status: searching.status });
 
   let queue = await buildQueue(searching, new Set(), RADIUS_KM);
@@ -180,19 +189,21 @@ async function start(ride) {
 
   if (queue.length === 0) {
     await logWhyNoDrivers(searching, searchedRadius);
-    await noDrivers(ride.id);
+    await noDrivers(ride.id, 'no_candidates_initial');
     return;
   }
 
   const s = {
     ride: searching,
     customerUserId: customer.user_id,
+    customerName: customerUser?.name ?? 'Customer',
+    customerPhoneMasked: maskPhone(customerUser?.mobile),
     queue,
     idx: 0,
     mode: 'auto',
     offeredUserIds: new Map(), // driverId -> driverUserId
     offerTimer: null,
-    globalTimer: setTimeout(() => noDrivers(ride.id).catch((e) => logger.error({ e }, 'noDrivers')), NO_DRIVER_TIMEOUT_MS),
+    globalTimer: setTimeout(() => noDrivers(ride.id, 'global_timeout').catch((e) => logger.error({ e }, 'noDrivers')), NO_DRIVER_TIMEOUT_MS),
   };
   state.set(ride.id, s);
   L.event('▶️', 'dispatch started', { rideId: ride.id, candidates: queue.length });
@@ -270,6 +281,17 @@ async function offerNext(rideId) {
   const s = state.get(rideId);
   if (!s) return;
 
+  // Point-in-time snapshot of exactly what offerNext saw the moment it was
+  // called — fires on every call (initial, post-reject, post-timeout,
+  // post-skip), so the sequence of these lines alone proves whether/when it
+  // was invoked and with what index, independent of anything else below.
+  L.event('➡️', 'offerNext invoked', {
+    rideId,
+    idx: s.idx,
+    queueLength: s.queue.length,
+    nextDriverId: s.queue[s.idx]?.driverId ?? null,
+  });
+
   if (s.idx >= s.queue.length) {
     if (s.mode === 'admin') {
       // Admin picked exactly one driver — no auto-widening here, just report
@@ -279,16 +301,27 @@ async function offerNext(rideId) {
     }
     // Nearby list exhausted — widen the net (EXPAND_RADIUS_KM; 0 = no limit).
     const excl = new Set(s.queue.map((c) => c.driverId));
+    const previousQueueLength = s.queue.length;
+    const idxAtExhaustion = s.idx;
     const fresh = await buildQueue(s.ride, excl, EXPAND_RADIUS_KM);
     if (fresh.length === 0) {
+      L.event('🔄', 'queue exhausted — re-query found nobody new', {
+        rideId,
+        previousQueueLength,
+        idx: idxAtExhaustion,
+        added: 0,
+      });
       await logWhyNoDrivers(s.ride, EXPAND_RADIUS_KM);
-      await noDrivers(rideId);
+      await noDrivers(rideId, 'requery_empty');
       return;
     }
     s.queue.push(...fresh);
     L.event('🔄', `re-queried (${radiusLabel(EXPAND_RADIUS_KM)}) after exhausting nearby`, {
       rideId,
+      previousQueueLength,
+      idx: idxAtExhaustion,
       added: fresh.length,
+      addedDriverIds: fresh.map((c) => c.driverId),
     });
   }
 
@@ -305,9 +338,24 @@ async function offerNext(rideId) {
     drv.kyc_status !== 'approved' ||
     !driverServes(drv, s.ride.ride_type)
   ) {
+    // Named single reason, on top of the raw fields already logged — a
+    // vehicle-category mismatch or stale GPS can never land here (both are
+    // already filtered out of the queue by buildQueue()/nearby(), so a
+    // candidate that made it into s.queue by definition matched category +
+    // had fresh GPS; see the 🔍/❌ blocks for that stage instead).
+    const reason = !drv
+      ? 'driver_not_found'
+      : drv.is_online !== 1
+        ? 'offline'
+        : drv.availability !== 'available'
+          ? `unavailable(${drv.availability})`
+          : drv.kyc_status !== 'approved'
+            ? 'kyc_not_approved'
+            : 'service_type_not_served';
     L.event('⏭️', 'skipped — driver no longer dispatchable', {
       rideId,
       driverId: cand.driverId,
+      reason,
       isOnline: drv?.is_online,
       availability: drv?.availability,
       kyc: drv?.kyc_status,
@@ -327,6 +375,7 @@ async function offerNext(rideId) {
   // driver's `user:<id>` room is what carries the popup.
   const delivery = realtime.toUserVerbose(drv.user_id, 'ride:offer', {
     rideId,
+    customer: { name: s.customerName, phoneMasked: s.customerPhoneMasked },
     pickup: { lat: Number(s.ride.pickup_lat), lng: Number(s.ride.pickup_lng), addr: s.ride.pickup_addr },
     drop: { lat: Number(s.ride.drop_lat), lng: Number(s.ride.drop_lng), addr: s.ride.drop_addr },
     distanceToPickupM: cand.distanceM,
@@ -337,9 +386,13 @@ async function offerNext(rideId) {
   });
   const liveSockets = delivery.delivered;
 
+  const offerNumber = `${s.idx + 1}/${s.queue.length}`;
+
   if (liveSockets > 0) {
     L.event('📨', `ride:offer delivered to ${delivery.room}`, {
       rideId,
+      offerNumber,
+      queueIndex: s.idx,
       driverId: cand.driverId,
       driverUserId: drv.user_id,
       sockets: liveSockets,
@@ -349,6 +402,8 @@ async function offerNext(rideId) {
     const snap = realtime.registrySnapshot();
     L.warnEvent('📵', 'offered driver has NO live socket — ride:offer reached nobody', {
       rideId,
+      offerNumber,
+      queueIndex: s.idx,
       driverId: cand.driverId,
       driverUserId: drv.user_id,
       targetRoom: delivery.room,
@@ -399,8 +454,31 @@ async function handleOfferResponse(rideId, driverId, accept) {
     const cand = s.queue[s.idx];
     if (cand && cand.driverId === driverId) {
       clearTimeout(s.offerTimer);
+      const idxBefore = s.idx;
       s.idx += 1;
+      const next = s.queue[s.idx] ?? null;
+      L.event('↪️', 'rejection processed — queue advanced', {
+        rideId,
+        driverId,
+        idxBefore,
+        queueLength: s.queue.length,
+        idxAfter: s.idx,
+        nextDriverId: next?.driverId ?? null,
+      });
       offerNext(rideId).catch((e) => logger.error({ err: e }, 'offerNext (post-reject)'));
+    } else {
+      // The rejecting driver isn't who the queue currently thinks is offered
+      // (e.g. a late/duplicate reject arriving after the index already moved
+      // on for another reason) — the index is deliberately NOT advanced a
+      // second time and offerNext() is NOT called here. Previously silent;
+      // if this line appears where you expected a normal reject, that's the
+      // root cause, not a missing second offer.
+      L.warnEvent('⚠️', 'rejection ignored — driver does not match current queue position', {
+        rideId,
+        driverId,
+        idx: s.idx,
+        currentCandidateDriverId: cand?.driverId ?? null,
+      });
     }
     return { ok: true, reason: 'declined' };
   }
@@ -500,8 +578,14 @@ async function handleOfferResponse(rideId, driverId, accept) {
   }
 }
 
-async function noDrivers(rideId) {
+async function noDrivers(rideId, reason = 'unknown') {
   const s = state.get(rideId);
+  // Captured BEFORE cleanup — s.queue/idx describe exactly what dispatch had
+  // tried when it gave up. Absent for the "empty queue at start()" reason,
+  // since dispatch state is only created once a non-empty queue exists.
+  const triedDriverIds = s ? s.queue.slice(0, s.idx).map((c) => c.driverId) : [];
+  const queueLength = s ? s.queue.length : 0;
+  const idx = s ? s.idx : 0;
   if (s) {
     clearTimers(s);
     state.delete(rideId);
@@ -522,7 +606,13 @@ async function noDrivers(rideId) {
     body: 'We could not find a driver nearby. Please try again.',
     data: { rideId: String(rideId) },
   });
-  L.event('🛑', 'gave up — NO_DRIVERS_FOUND (customer notified)', { rideId });
+  L.event('🛑', 'gave up — NO_DRIVERS_FOUND (customer notified)', {
+    rideId,
+    reason,
+    queueLength,
+    idx,
+    triedDriverIds,
+  });
 }
 
 /** Called when the customer cancels while still searching. */
@@ -546,4 +636,4 @@ function maskPhone(m) {
   return `${m.slice(0, 2)}xxxxx${m.slice(-3)}`;
 }
 
-module.exports = { start, startForAdminPick, handleOfferResponse, cancelDispatch, noDrivers, isDispatching };
+module.exports = { start, startForAdminPick, handleOfferResponse, cancelDispatch, noDrivers, isDispatching, ride4 };

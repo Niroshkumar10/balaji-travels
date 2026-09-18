@@ -25,6 +25,8 @@ void _dlog(String msg) {
 class PendingOffer {
   const PendingOffer({
     required this.rideId,
+    required this.customerName,
+    this.customerPhoneMasked,
     required this.pickup,
     required this.drop,
     required this.distanceToPickupM,
@@ -35,6 +37,8 @@ class PendingOffer {
   });
 
   final int rideId;
+  final String customerName;
+  final String? customerPhoneMasked;
   final LatLngPoint pickup;
   final LatLngPoint drop;
   final int distanceToPickupM;
@@ -455,6 +459,8 @@ class DriverController extends StateNotifier<DriverState> {
             // asInt/asDouble (json.dart) already exist in this codebase
             // specifically for "backend returns numbers as strings" fields.
             rideId: asInt(d['rideId']),
+            customerName: _map(d['customer'])['name']?.toString() ?? 'Customer',
+            customerPhoneMasked: _map(d['customer'])['phoneMasked']?.toString(),
             pickup: LatLngPoint.fromJson(_map(d['pickup'])),
             drop: LatLngPoint.fromJson(_map(d['drop'])),
             distanceToPickupM: asInt(d['distanceToPickupM']),

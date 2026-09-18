@@ -12,6 +12,7 @@ import '../../../core/widgets/common_widgets.dart';
 import '../../../core/widgets/map_view.dart';
 import '../../../state/providers.dart';
 import '../outstation/outstation_plan_screen.dart';
+import '../rental/rental_plan_screen.dart';
 import '../ride_request/where_to_screen.dart';
 import '../ride_session_controller.dart';
 import 'vehicle_picker_sheet.dart';
@@ -98,9 +99,10 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
   }
 
   /// Rental: pick a vehicle (Urbania / Tempo Traveller / Car / Bus + seater),
-  /// then land on the normal Plan-your-ride screen with that choice carried
-  /// along as a banner — the rider can still search a real drop for a real
-  /// fare, or use "Continue without drop" to leave it to the team.
+  /// then its own Plan-your-ride screen (pickup/drop) → package list (see
+  /// rental_plan_screen.dart/rental_package_screen.dart) — real backend
+  /// package pricing for the picked vehicle's mapped category, not the
+  /// generic bike/auto/hatchback/sedan/suv list Local shows.
   Future<void> _startRental() async {
     // Deliberately does NOT setState _rideType = rental — that state would
     // outlive the pushed screen (this widget isn't rebuilt when the rider
@@ -111,7 +113,9 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
     // picker fresh instead.
     final pick = await showVehiclePickerSheet(context);
     if (pick == null || !mounted) return;
-    context.push('/c/where-to', extra: WhereToArgs(vehicleLabel: pick.label));
+    await _ensureOutstationPickup();
+    if (!mounted || _outstationPickup == null) return;
+    context.push('/c/rental-plan', extra: RentalPlanArgs(pickup: _outstationPickup!, vehicle: pick));
   }
 
   /// Outstation: stays on this same screen — the panel below the tabs swaps
