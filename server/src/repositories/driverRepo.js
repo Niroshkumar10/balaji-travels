@@ -6,7 +6,7 @@ const store = require('../infra/memoryStore');
 const DRIVER_SELECT = `d.id, d.user_id, d.kyc_status, d.kyc_reject_reason, d.license_no,
         d.license_expiry, d.license_doc_path, d.id_proof_type, d.id_proof_number,
         d.id_proof_doc_path, d.photo_path,
-        d.rating_avg, d.rating_count, d.is_online, d.availability,
+        d.rating_avg, d.rating_count, d.is_online, d.availability, d.service_types,
         d.current_vehicle_id, d.last_seen_at`;
 
 // Whitelisted driver-document fields → columns. Never build SQL from raw
@@ -47,6 +47,14 @@ const sqlImpl = {
       `UPDATE rt_drivers SET license_no = COALESCE(:licenseNo, license_no) WHERE id = :id`,
       { id, licenseNo: patch.licenseNo ?? null },
     );
+  },
+
+  /** serviceTypes: non-empty array of 'local'|'rental'|'outstation'. */
+  async setServiceTypes(id, serviceTypes, ctx = db) {
+    await ctx.query(`UPDATE rt_drivers SET service_types = :serviceTypes WHERE id = :id`, {
+      id,
+      serviceTypes: serviceTypes.join(','),
+    });
   },
   async setPresence(id, { isOnline, availability }, ctx = db) {
     await ctx.query(
@@ -124,6 +132,7 @@ const memImpl = {
       rating_count: 0,
       is_online: 0,
       availability: 'offline',
+      service_types: 'local',
       current_vehicle_id: null,
       last_seen_at: null,
     });
@@ -133,6 +142,10 @@ const memImpl = {
   async updateProfile(id, patch) {
     const d = store.find('drivers', (x) => x.id === Number(id));
     if (d && patch.licenseNo != null) store.update(d, { license_no: patch.licenseNo });
+  },
+  async setServiceTypes(id, serviceTypes) {
+    const d = store.find('drivers', (x) => x.id === Number(id));
+    if (d) store.update(d, { service_types: serviceTypes.join(',') });
   },
   async setPresence(id, { isOnline, availability }) {
     const d = store.find('drivers', (x) => x.id === Number(id));

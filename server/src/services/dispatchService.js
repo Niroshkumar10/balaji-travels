@@ -37,6 +37,7 @@ const vehicleRepo = require('../repositories/vehicleRepo');
 const driverLocationRepo = require('../repositories/driverLocationRepo');
 const customerRepo = require('../repositories/customerRepo');
 const userRepo = require('../repositories/userRepo');
+const { serviceFor, driverServes } = require('../utils/serviceType');
 
 const OFFER_TIMEOUT_MS = env.DISPATCH_OFFER_TIMEOUT_MS;
 const NO_DRIVER_TIMEOUT_MS = env.DISPATCH_NO_DRIVER_TIMEOUT_MS;
@@ -80,6 +81,7 @@ async function buildQueue(ride, excludeIds = new Set(), radiusKm = RADIUS_KM) {
     lng: Number(ride.pickup_lng),
     radiusKm,
     categories: [ride.vehicle_category],
+    serviceType: serviceFor(ride.ride_type),
     limit: MAX_DRIVERS * 2,
   });
   const queue = rows
@@ -94,7 +96,7 @@ async function buildQueue(ride, excludeIds = new Set(), radiusKm = RADIUS_KM) {
     }));
   L.block('🔍', `Ride #${ride.id} — driver search`, [
     `Pickup    : ${Number(ride.pickup_lat).toFixed(5)}, ${Number(ride.pickup_lng).toFixed(5)}`,
-    `Category  : ${ride.vehicle_category}    Radius : ${radiusLabel(radiusKm)}`,
+    `Category  : ${ride.vehicle_category}    Service : ${serviceFor(ride.ride_type)}    Radius : ${radiusLabel(radiusKm)}`,
     `Found     : ${rows.length} matching  →  queued ${queue.length}`,
     ...queue.map((c, i) => `  ${i + 1}. driver ${c.driverId}   ${km(c.distanceM)} from pickup`),
   ]);
@@ -109,6 +111,7 @@ async function logWhyNoDrivers(ride, radiusKm = RADIUS_KM) {
       lng: Number(ride.pickup_lng),
       radiusKm,
       category: ride.vehicle_category,
+      serviceType: serviceFor(ride.ride_type),
     });
     const distLine =
       d.radiusKm == null
@@ -123,6 +126,7 @@ async function logWhyNoDrivers(ride, radiusKm = RADIUS_KM) {
       `  GPS fresh (< ${d.staleSeconds}s) ...... ${d.freshLocation}`,
       distLine,
       `  vehicle = ${d.requestedCategory} ......... ${d.categoryMatch}`,
+      `  serves ${d.serviceType} ......... ${d.serviceMatch}`,
     ];
     if (Array.isArray(d.drivers) && d.drivers.length) {
       lines.push('', 'Online drivers — vehicle check:');
@@ -131,7 +135,8 @@ async function logWhyNoDrivers(ride, radiusKm = RADIUS_KM) {
           ? `${drv.vehicleCategory} (vehicle #${drv.activeVehicleId})`
           : `current_vehicle_id=${drv.currentVehicleId ?? 'NULL'} → no active/owned vehicle`;
         const verdict = drv.categoryOk ? '✓ match' : `✗ needs ${drv.requestedCategory ?? d.requestedCategory}`;
-        lines.push(`  driver ${drv.driverId}: ${veh}   ${verdict}`);
+        const svc = drv.serviceTypes.split(',').includes(d.serviceType) ? '✓' : '✗';
+        lines.push(`  driver ${drv.driverId}: ${veh}   ${verdict}   services=[${drv.serviceTypes}] ${svc}`);
       }
     }
     L.block('❌', `Ride #${ride.id} — no candidates (first 0 = the reason)`, lines);
@@ -184,6 +189,7 @@ async function start(ride) {
     customerUserId: customer.user_id,
     queue,
     idx: 0,
+    mode: 'auto',
     offeredUserIds: new Map(), // driverId -> driverUserId
     offerTimer: null,
     globalTimer: setTimeout(() => noDrivers(ride.id).catch((e) => logger.error({ e }, 'noDrivers')), NO_DRIVER_TIMEOUT_MS),
@@ -193,11 +199,84 @@ async function start(ride) {
   offerNext(ride.id).catch((e) => logger.error({ err: e }, 'offerNext failed'));
 }
 
+/**
+ * Rental/outstation path: an ops admin hand-picked one driver from
+ * adminAssignmentService.candidates() rather than the nearest-first auto
+ * queue. Reuses the exact same single-offer/accept/timeout machinery as
+ * `start()` — just seeded with one candidate — so the driver gets a normal
+ * accept/reject offer through the app. If it's rejected or times out,
+ * `offerNext` routes to `adminOfferFailed` (mode === 'admin') instead of
+ * `noDrivers`, putting the ride back in the admin queue instead of failing
+ * it outright.
+ */
+async function startForAdminPick(ride, driverId) {
+  const loc = await driverLocationRepo.get(driverId);
+  const cand = {
+    driverId,
+    distanceM: loc
+      ? geo.haversineMeters(Number(ride.pickup_lat), Number(ride.pickup_lng), Number(loc.lat), Number(loc.lng))
+      : null,
+    lat: loc ? Number(loc.lat) : null,
+    lng: loc ? Number(loc.lng) : null,
+  };
+
+  const searching = await db.withTransaction((tx) =>
+    rideRepo.transition({ rideId: ride.id, event: 'admin_offer', actorRole: 'system' }, tx),
+  );
+  const customer = await customerRepo.findById(ride.customer_id);
+  realtime.toUser(customer.user_id, 'ride:searching', { rideId: ride.id, status: searching.status });
+
+  const s = {
+    ride: searching,
+    customerUserId: customer.user_id,
+    queue: [cand],
+    idx: 0,
+    mode: 'admin',
+    offeredUserIds: new Map(),
+    offerTimer: null,
+    // Slightly longer than the single per-offer window — this is just a
+    // safety net in case offerNext's own timeout callback never fires.
+    globalTimer: setTimeout(
+      () => adminOfferFailed(ride.id).catch((e) => logger.error({ e }, 'adminOfferFailed')),
+      OFFER_TIMEOUT_MS + 5000,
+    ),
+  };
+  state.set(ride.id, s);
+  L.event('▶️', 'admin-picked offer started', { rideId: ride.id, driverId });
+  offerNext(ride.id).catch((e) => logger.error({ err: e }, 'offerNext (admin pick) failed'));
+}
+
+/** The admin-picked driver rejected or timed out — back to the admin queue. */
+async function adminOfferFailed(rideId) {
+  const s = state.get(rideId);
+  if (s) {
+    clearTimers(s);
+    state.delete(rideId);
+  }
+  const updated = await db.withTransaction(async (tx) => {
+    const cur = await rideRepo.findById(rideId, tx);
+    if (!cur || cur.status !== 'SEARCHING_DRIVER') return cur;
+    await rideOfferRepo.timeoutAllSent(rideId, tx);
+    return rideRepo.transition({ rideId, event: 'admin_offer_failed', actorRole: 'system' }, tx);
+  });
+  if (!updated || updated.status !== 'PENDING_ADMIN_ASSIGNMENT') return;
+
+  const customer = await customerRepo.findById(updated.customer_id);
+  realtime.toUser(customer.user_id, 'ride:pending_admin_assignment', { rideId, status: updated.status });
+  L.event('🔁', 'admin-picked driver did not confirm — back to admin queue', { rideId });
+}
+
 async function offerNext(rideId) {
   const s = state.get(rideId);
   if (!s) return;
 
   if (s.idx >= s.queue.length) {
+    if (s.mode === 'admin') {
+      // Admin picked exactly one driver — no auto-widening here, just report
+      // back to the admin queue so a human picks the next candidate.
+      await adminOfferFailed(rideId);
+      return;
+    }
     // Nearby list exhausted — widen the net (EXPAND_RADIUS_KM; 0 = no limit).
     const excl = new Set(s.queue.map((c) => c.driverId));
     const fresh = await buildQueue(s.ride, excl, EXPAND_RADIUS_KM);
@@ -217,13 +296,22 @@ async function offerNext(rideId) {
 
   // Re-check the driver is still dispatchable right before the offer.
   const drv = await driverRepo.findById(cand.driverId);
-  if (!drv || drv.is_online !== 1 || drv.availability !== 'available' || drv.kyc_status !== 'approved') {
+  // Service is rechecked too: the driver may have switched this service off
+  // in his trip preferences after the queue was built.
+  if (
+    !drv ||
+    drv.is_online !== 1 ||
+    drv.availability !== 'available' ||
+    drv.kyc_status !== 'approved' ||
+    !driverServes(drv, s.ride.ride_type)
+  ) {
     L.event('⏭️', 'skipped — driver no longer dispatchable', {
       rideId,
       driverId: cand.driverId,
       isOnline: drv?.is_online,
       availability: drv?.availability,
       kyc: drv?.kyc_status,
+      services: drv?.service_types,
     });
     s.idx += 1;
     return offerNext(rideId);
@@ -458,4 +546,4 @@ function maskPhone(m) {
   return `${m.slice(0, 2)}xxxxx${m.slice(-3)}`;
 }
 
-module.exports = { start, handleOfferResponse, cancelDispatch, noDrivers, isDispatching };
+module.exports = { start, startForAdminPick, handleOfferResponse, cancelDispatch, noDrivers, isDispatching };

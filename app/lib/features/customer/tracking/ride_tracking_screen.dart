@@ -329,6 +329,7 @@ class _Panel extends ConsumerWidget {
             RideStatus.requested ||
             RideStatus.searchingDriver =>
               _searching(context, ref),
+            RideStatus.pendingAdminAssignment => _pendingAdmin(context, ref),
             RideStatus.noDriversFound => _terminal(
                 context,
                 icon: Icons.search_off_rounded,
@@ -367,6 +368,33 @@ class _Panel extends ConsumerWidget {
         Text(
           '${VehicleCategoryInfo.of(ride.vehicleCategory).name}  ·  ${distance(ride.distanceM)}  ·  ${money(ride.amountDue)}',
           style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton(
+            onPressed: () => _cancel(context, ref),
+            child: const Text('Cancel'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // pending admin assignment (rental/outstation) ---------------------------
+  Widget _pendingAdmin(BuildContext context, WidgetRef ref) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _PulseDot(),
+        const SizedBox(height: 14),
+        Text('Driver will be assigned shortly',
+            style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 4),
+        const Text(
+          'Our team is lining up a driver for your trip — usually within 30 minutes.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
         ),
         const SizedBox(height: 16),
         SizedBox(

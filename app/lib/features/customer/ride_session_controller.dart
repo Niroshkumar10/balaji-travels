@@ -142,6 +142,7 @@ class RideSessionController extends StateNotifier<RideSessionState> {
           driverUpdatedAt: DateTime.now(),
         );
       case 'ride:searching':
+      case 'ride:pending_admin_assignment':
       case 'ride:driver_assigned':
       case 'ride:status':
       case 'ride:driver_arrived':

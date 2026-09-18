@@ -24,6 +24,9 @@ const latLng = z.object({ lat, lng });
 
 const paymentMethod = z.enum(['cash', 'upi', 'card', 'wallet']);
 const vehicleCategory = z.enum(['bike', 'auto', 'hatchback', 'sedan', 'suv']);
+const rideType = z.enum(['local', 'outstation', 'round_trip', 'rental']);
+// At least one — a driver with no services would never be offered a ride.
+const serviceTypes = z.array(z.enum(['local', 'rental', 'outstation'])).min(1).max(3);
 
 const idParam = z.object({ id: z.coerce.number().int().positive() });
 
@@ -36,5 +39,7 @@ module.exports = {
   latLng,
   paymentMethod,
   vehicleCategory,
+  rideType,
+  serviceTypes,
   idParam,
 };

@@ -6,7 +6,7 @@ const validate = require('../../middleware/validate');
 const authenticate = require('../../middleware/auth');
 const requireRole = require('../../middleware/role');
 const asyncHandler = require('../../utils/asyncHandler');
-const { vehicleCategory, lat, lng } = require('../../utils/validators');
+const { vehicleCategory, lat, lng, serviceTypes } = require('../../utils/validators');
 const profile = require('../../controllers/profileController');
 const presence = require('../../controllers/presenceController');
 const { uploadDoc } = require('../../middleware/upload');
@@ -18,6 +18,9 @@ const patchBody = z
     name: z.string().trim().min(1).max(120).optional(),
     email: z.string().trim().email().max(160).optional(),
     licenseNo: z.string().trim().min(4).max(60).optional(),
+    // Which bookings this driver receives — local / rental / outstation,
+    // any combination, at least one (see server/src/utils/serviceType.js).
+    serviceTypes: serviceTypes.optional(),
   })
   .strict();
 

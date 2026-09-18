@@ -5,7 +5,7 @@ const { z } = require('zod');
 const validate = require('../../middleware/validate');
 const hmacAdmin = require('../../middleware/hmacAdmin');
 const asyncHandler = require('../../utils/asyncHandler');
-const { vehicleCategory, paymentMethod, mobile, lat, lng } = require('../../utils/validators');
+const { vehicleCategory, paymentMethod, mobile, lat, lng, rideType, serviceTypes } = require('../../utils/validators');
 const ops = require('../../controllers/opsController');
 
 const router = Router();
@@ -22,7 +22,7 @@ const createBookingBody = z
     pickup: bookingPlace,
     drop: bookingPlace,
     vehicleCategory,
-    rideType: z.enum(['local', 'outstation', 'round_trip']).optional(),
+    rideType: rideType.optional(),
     paymentMethod: paymentMethod.optional(),
     promoCode: z.string().trim().min(3).max(40).optional(),
   })
@@ -39,8 +39,24 @@ router.post(
   validate({ body: z.object({ status: z.enum(['approved', 'rejected', 'suspended', 'pending']), reason: z.string().max(255).optional() }) }),
   asyncHandler(ops.setKyc),
 );
+router.post(
+  '/drivers/:driverId/services',
+  validate({ body: z.object({ serviceTypes, adminId: z.coerce.number().int().positive().optional() }) }),
+  asyncHandler(ops.setDriverServices),
+);
 
 router.get('/rides', asyncHandler(ops.listRides));
+router.get('/rides/:rideId/candidates', asyncHandler(ops.rideCandidates));
+router.post(
+  '/rides/:rideId/assign',
+  validate({
+    body: z.object({
+      driverId: z.coerce.number().int().positive(),
+      adminId: z.coerce.number().int().positive(),
+    }),
+  }),
+  asyncHandler(ops.assignRideDriver),
+);
 
 router.post(
   '/fare-config',

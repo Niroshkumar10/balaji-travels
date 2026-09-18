@@ -46,6 +46,7 @@ const driverLocationRepo = {
       lng,
       radiusKm,
       categories,
+      serviceType,
       staleSeconds = env.DRIVER_LOCATION_STALE_SECONDS,
       limit = 20,
     },
@@ -56,7 +57,8 @@ const driverLocationRepo = {
       Array.isArray(categories) && categories.length
         ? `AND v.category IN (${categories.map((_, i) => `:cat${i}`).join(',')})`
         : '';
-    const params = { staleSeconds };
+    const svcFilter = serviceType ? 'AND FIND_IN_SET(:serviceType, d.service_types) > 0' : '';
+    const params = { staleSeconds, serviceType: serviceType ?? null };
     (categories ?? []).forEach((c, i) => {
       params[`cat${i}`] = c;
     });
@@ -93,7 +95,8 @@ const driverLocationRepo = {
           AND d.kyc_status = 'approved'
           AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
           ${boxFilter}
-          ${catFilter}`,
+          ${catFilter}
+          ${svcFilter}`,
       params,
     );
 
@@ -111,7 +114,7 @@ const driverLocationRepo = {
    * Why is `nearby` returning nothing? Counts drivers surviving each filter
    * stage so a "no drivers found" can name the exact cause in the logs.
    */
-  async diagnose({ lat, lng, radiusKm, category, staleSeconds = env.DRIVER_LOCATION_STALE_SECONDS }, ctx = db) {
+  async diagnose({ lat, lng, radiusKm, category, serviceType, staleSeconds = env.DRIVER_LOCATION_STALE_SECONDS }, ctx = db) {
     const limited = Number.isFinite(radiusKm) && radiusKm > 0;
     const box = limited
       ? boundingBox(lat, lng, radiusKm)
@@ -143,7 +146,19 @@ const driverLocationRepo = {
            WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
              AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
              AND dl.lat BETWEEN :latMin AND :latMax AND dl.lng BETWEEN :lngMin AND :lngMax
-             AND v.category = :category) AS category_match`,
+             AND v.category = :category) AS category_match,
+         (SELECT COUNT(*)
+            FROM rt_drivers d
+            JOIN rt_driver_locations dl ON dl.driver_id = d.id
+            JOIN rt_vehicles v ON v.id = d.current_vehicle_id
+                              AND v.driver_id = d.id
+                              AND v.is_active = 1
+                              AND v.deleted_at IS NULL
+           WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
+             AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
+             AND dl.lat BETWEEN :latMin AND :latMax AND dl.lng BETWEEN :lngMin AND :lngMax
+             AND v.category = :category
+             AND (:serviceType IS NULL OR FIND_IN_SET(:serviceType, d.service_types) > 0)) AS service_match`,
       {
         staleSeconds,
         latMin: box.latMin,
@@ -151,6 +166,7 @@ const driverLocationRepo = {
         lngMin: box.lngMin,
         lngMax: box.lngMax,
         category,
+        serviceType: serviceType ?? null,
       },
     );
 
@@ -164,6 +180,7 @@ const driverLocationRepo = {
               v.id       AS active_vehicle_id,
               v.category AS vehicle_category,
               v.is_active,
+              d.service_types,
               (v.id IS NOT NULL AND v.category = :category) AS category_ok
          FROM rt_drivers d
          JOIN rt_driver_locations dl ON dl.driver_id = d.id
@@ -186,10 +203,12 @@ const driverLocationRepo = {
       freshLocation: Number(row?.fresh_location ?? 0),
       insideRadiusBox: Number(row?.in_box ?? 0),
       categoryMatch: Number(row?.category_match ?? 0),
+      serviceMatch: Number(row?.service_match ?? 0),
       staleSeconds,
       radiusKm: limited ? radiusKm : null, // null → no distance limit
       category,
       requestedCategory: category,
+      serviceType: serviceType ?? null,
       drivers: (drivers ?? []).map((r) => ({
         driverId: r.driver_id,
         currentVehicleId: r.current_vehicle_id ?? null,
@@ -197,8 +216,48 @@ const driverLocationRepo = {
         vehicleCategory: r.vehicle_category ?? null,
         isActive: r.is_active == null ? null : Number(r.is_active),
         categoryOk: !!Number(r.category_ok),
+        serviceTypes: r.service_types ?? '',
       })),
     };
+  },
+
+  /**
+   * Same eligibility rules as `nearby()` (online, available, KYC-approved,
+   * fresh GPS, right vehicle category, serves the requested service type) —
+   * used to show an ops admin a ranked "who can take this booking" list for
+   * a rental/outstation ride, so it includes name/mobile/rating for display
+   * and has NO radius limit (an admin manually assigning a long-distance
+   * trip cares about "who's eligible", not "who's closest right now").
+   */
+  async candidatesForAdmin({ lat, lng, category, serviceType, staleSeconds = env.DRIVER_LOCATION_STALE_SECONDS, limit = 20 }, ctx = db) {
+    const rows = await ctx.query(
+      `SELECT d.id AS driver_id, d.rating_avg, d.rating_count, d.current_vehicle_id,
+              u.name, u.mobile,
+              v.id AS vehicle_id, v.category AS vehicle_category, v.plate_no, v.model,
+              dl.lat, dl.lng, dl.updated_at
+         FROM rt_driver_locations dl
+         JOIN rt_drivers d  ON d.id = dl.driver_id
+         JOIN rt_users u    ON u.id = d.user_id
+         JOIN rt_vehicles v ON v.id = d.current_vehicle_id
+                           AND v.driver_id = d.id
+                           AND v.is_active = 1
+                           AND v.deleted_at IS NULL
+        WHERE d.is_online = 1
+          AND d.availability = 'available'
+          AND d.kyc_status = 'approved'
+          AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
+          AND v.category = :category
+          AND FIND_IN_SET(:serviceType, d.service_types) > 0`,
+      { staleSeconds, category, serviceType },
+    );
+
+    return rows
+      .map((r) => ({
+        ...r,
+        distance_m: haversineMeters(lat, lng, Number(r.lat), Number(r.lng)),
+      }))
+      .sort((a, b) => a.distance_m - b.distance_m)
+      .slice(0, limit);
   },
 
   /**

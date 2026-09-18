@@ -80,6 +80,7 @@ class SocketClient {
 
   static const _serverEvents = <String>[
     'ride:searching',
+    'ride:pending_admin_assignment',
     'ride:offer',
     'ride:offer_revoked',
     'ride:driver_assigned',

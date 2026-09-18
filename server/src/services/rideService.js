@@ -7,6 +7,8 @@ const geo = require('./geoService');
 const fareService = require('./fareService');
 const promoService = require('./promoService');
 const dispatchService = require('./dispatchService');
+const adminAssignmentService = require('./adminAssignmentService');
+const { serviceFor } = require('../utils/serviceType');
 const paymentService = require('./paymentService');
 const notifyService = require('./notifyService');
 const realtime = require('../realtime/emitter');
@@ -190,7 +192,16 @@ const rideService = {
       });
     }
 
-    dispatchService.start(ride).catch((err) => logger.error({ err, rideId: ride.id }, 'dispatch start failed'));
+    // Local rides auto-dispatch to the nearest matching driver. Rental and
+    // outstation (+ round trip) skip that cascade entirely and wait for an
+    // ops admin to hand-pick a driver — see adminAssignmentService.
+    if (serviceFor(rideType) === 'local') {
+      dispatchService.start(ride).catch((err) => logger.error({ err, rideId: ride.id }, 'dispatch start failed'));
+    } else {
+      adminAssignmentService
+        .queueForAdmin(ride)
+        .catch((err) => logger.error({ err, rideId: ride.id }, 'queueForAdmin failed'));
+    }
     return enrich(await rideRepo.findById(ride.id));
   },
 
