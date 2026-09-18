@@ -29,6 +29,10 @@ const db = require('../infra/db');
 const realtime = require('../realtime/emitter');
 const notifyService = require('../services/notifyService');
 const userRepo = require('../repositories/userRepo');
+const rideRepo = require('../repositories/rideRepo');
+const dispatchService = require('../services/dispatchService');
+const geo = require('../services/geoService');
+const { isTerminal } = require('../services/rideStateMachine');
 
 let timer = null;
 const lastStatus = new Map(); // rideId -> last-seen status string
@@ -36,7 +40,8 @@ const lastStatus = new Map(); // rideId -> last-seen status string
 async function poll() {
   if (db.MEMORY) return;
   const rows = await db.query(
-    `SELECT r.id, r.status, r.customer_id, r.driver_id,
+    `SELECT r.id, r.status, r.customer_id, r.driver_id, r.otp,
+            r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng, r.distance_m,
             c.user_id AS customer_user_id, d.user_id AS driver_user_id
        FROM rt_rides r
        JOIN rt_customers c ON c.id = r.customer_id
@@ -48,6 +53,38 @@ async function poll() {
   const seenIds = new Set();
   for (const row of rows) {
     seenIds.add(row.id);
+
+    // The Admin Panel writes rt_rides directly, skipping dispatchService's
+    // accept flow entirely — the ONLY place that normally generates the
+    // ride-start OTP (rideRepo.setOtp, see dispatchService.js). Without this,
+    // an admin-assigned ride never gets one and the driver has nothing to ask
+    // the customer for. Backfill it here, the moment we see a driver on the
+    // ride with no OTP yet, using the exact same generator dispatch uses.
+    if (row.driver_id && !row.otp && !isTerminal(row.status)) {
+      const otp = dispatchService.ride4();
+      await rideRepo.setOtp(row.id, otp);
+      row.otp = otp;
+      logger.info({ rideId: row.id, driverId: row.driver_id }, 'admin booking: generated missing ride OTP');
+    }
+
+    // Same gap for the route: rideService.createRide() normally calls
+    // geo.route() for every ride, on creation, to get the polyline the map
+    // screens draw plus the real distance/duration the fare is based on. The
+    // Admin Panel's direct insert only ever has pickup/drop coordinates, so
+    // that never runs — the map has nothing to draw. Backfill it once,
+    // keyed off distance_m (not route_polyline, which is legitimately null
+    // whenever the Google Directions call falls back to a straight-line
+    // estimate) so this doesn't re-call the Directions API every 4s forever.
+    if (row.distance_m == null) {
+      const r = await geo.route(
+        { lat: Number(row.pickup_lat), lng: Number(row.pickup_lng) },
+        { lat: Number(row.drop_lat), lng: Number(row.drop_lng) },
+      );
+      await rideRepo.setRoute(row.id, { polyline: r.polyline, distanceM: r.distanceM, durationS: r.durationS });
+      row.distance_m = r.distanceM;
+      logger.info({ rideId: row.id, source: r.source, distanceM: r.distanceM }, 'admin booking: generated missing route');
+    }
+
     const prev = lastStatus.get(row.id);
     if (prev === row.status) continue;
     lastStatus.set(row.id, row.status);
