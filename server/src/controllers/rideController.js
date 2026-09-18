@@ -3,6 +3,7 @@
 const rideService = require('../services/rideService');
 const dispatchService = require('../services/dispatchService');
 const paymentService = require('../services/paymentService');
+const rentalService = require('../services/rentalService');
 const ApiError = require('../utils/apiError');
 
 const requester = (req) => ({
@@ -18,7 +19,10 @@ module.exports = {
   },
 
   async create(req, res) {
-    const { pickup, drop, vehicleCategory, rideType, paymentMethod, promoCode, payment } = req.body;
+    const {
+      pickup, drop, vehicleCategory, rideType, paymentMethod, promoCode, payment,
+      rentalPackageHours, scheduledAt,
+    } = req.body;
     const ride = await rideService.createRide({
       customer: { profileId: req.auth.profileId, userId: req.auth.userId },
       pickup,
@@ -28,8 +32,17 @@ module.exports = {
       paymentMethod,
       promoCode,
       payment,
+      rentalPackageHours,
+      scheduledAt,
     });
     res.status(201).json({ success: true, ride });
+  },
+
+  /** Rental fare-selection step — all 10 package tiers quoted for one
+   * vehicle category (see rentalService.js for the pricing rationale). */
+  async rentalPackages(req, res) {
+    const packages = await rentalService.quotePackages({ category: req.query.vehicleCategory });
+    res.json({ success: true, packages });
   },
 
   /** UPI booking, step 1 — quote the fare and open a Razorpay order for it

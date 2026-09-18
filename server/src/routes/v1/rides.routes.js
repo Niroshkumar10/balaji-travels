@@ -47,6 +47,16 @@ router.post(
   asyncHandler(ctrl.prebookOrder),
 );
 
+// Rental fare step — all 10 package tiers (1hr/10km .. 10hr/100km) quoted
+// for one vehicle category. Registered before GET /:id so "rental-packages"
+// is never swallowed as an :id.
+router.get(
+  '/rental-packages',
+  requireRole('customer'),
+  validate({ query: z.object({ vehicleCategory }) }),
+  asyncHandler(ctrl.rentalPackages),
+);
+
 // ── customer: create / list / get / cancel ──
 router.post(
   '/',
@@ -56,7 +66,7 @@ router.post(
       pickup: place,
       drop: place,
       vehicleCategory,
-      rideType: z.enum(['local', 'outstation', 'round_trip']).optional(),
+      rideType: z.enum(['local', 'outstation', 'round_trip', 'rental']).optional(),
       paymentMethod: paymentMethod.optional(),
       promoCode: z.string().trim().min(3).max(40).optional(),
       // Required when paymentMethod is 'upi' — the Razorpay payment already
@@ -68,6 +78,12 @@ router.post(
           signature: z.string().optional(),
         })
         .optional(),
+      // Required when rideType is 'rental' — one of rentalService.PACKAGE_HOURS.
+      rentalPackageHours: z.coerce.number().int().min(1).max(10).optional(),
+      // Optional on any ride type — a future pickup time. See
+      // jobs/scheduledDispatch.js: dispatch is held back until then instead
+      // of starting immediately.
+      scheduledAt: z.coerce.date().optional(),
     }),
   }),
   asyncHandler(ctrl.create),

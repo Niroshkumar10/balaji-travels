@@ -34,6 +34,12 @@ class RideRepository {
     // made against the order from PaymentRepository.createPrebookOrder().
     // The backend verifies it BEFORE creating the ride or starting dispatch.
     CheckoutResult? payment,
+    // Required when rideType is 'rental' — one of the tiers from
+    // rentalPackages() below (1-10).
+    int? rentalPackageHours,
+    // Optional on any ride type — a future pickup time. The backend holds
+    // dispatch back until then instead of starting immediately.
+    DateTime? scheduledAt,
   }) async {
     final res = await _api.post('/rides', body: {
       'pickup': pickup.toJson(),
@@ -48,8 +54,19 @@ class RideRepository {
           'paymentId': payment.paymentId,
           'signature': payment.signature,
         },
+      if (rentalPackageHours != null) 'rentalPackageHours': rentalPackageHours,
+      if (scheduledAt != null) 'scheduledAt': scheduledAt.toIso8601String(),
     });
     return _ride(res);
+  }
+
+  /// Rental fare step — all 10 package tiers quoted for one vehicle category.
+  Future<Result<List<RentalPackage>>> rentalPackages({required String vehicleCategory}) async {
+    final res = await _api.get('/rides/rental-packages', query: {'vehicleCategory': vehicleCategory});
+    return res.when<Result<List<RentalPackage>>>(
+      ok: (j) => Ok(asList(j['packages']).map(RentalPackage.fromJson).toList()),
+      err: (e) => Err(e),
+    );
   }
 
   Future<Result<Ride?>> active() async {

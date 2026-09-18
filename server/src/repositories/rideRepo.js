@@ -9,28 +9,28 @@ const RIDE_COLS = `id, ride_ref, customer_id, driver_id, vehicle_id, status, rid
   vehicle_category, pickup_lat, pickup_lng, pickup_addr, drop_lat, drop_lng, drop_addr,
   route_polyline, distance_m, duration_s, est_fare, final_fare, fare_breakdown,
   fare_config_id, promo_id, discount_amount, payment_id, payment_method, otp,
-  waiting_minutes, cancelled_by, cancel_reason,
+  waiting_minutes, cancelled_by, cancel_reason, scheduled_at, rental_package_hours,
   requested_at, assigned_at, driver_arrived_at, started_at, completed_at, cancelled_at,
   created_at, updated_at`;
 
 const rideRepo = {
   async create(data, ctx = db) {
-    // bookingSource/createdByAdminId default to today's behaviour (column
-    // default 'app' / NULL) — every existing caller that doesn't pass them
-    // is completely unaffected. Only the admin-booking path sets them.
+    // bookingSource/createdByAdminId/scheduledAt/rentalPackageHours default
+    // to today's behaviour (column default 'app' / NULL) — every existing
+    // caller that doesn't pass them is completely unaffected.
     const res = await ctx.query(
       `INSERT INTO rt_rides
          (customer_id, status, ride_type, vehicle_category,
           pickup_lat, pickup_lng, pickup_addr, drop_lat, drop_lng, drop_addr,
           route_polyline, distance_m, duration_s, est_fare, fare_breakdown,
           fare_config_id, promo_id, discount_amount, payment_method,
-          booking_source, created_by_admin_id)
+          booking_source, created_by_admin_id, scheduled_at, rental_package_hours)
        VALUES
          (:customerId, 'REQUESTED', :rideType, :vehicleCategory,
           :pickupLat, :pickupLng, :pickupAddr, :dropLat, :dropLng, :dropAddr,
           :routePolyline, :distanceM, :durationS, :estFare, :fareBreakdown,
           :fareConfigId, :promoId, :discountAmount, :paymentMethod,
-          :bookingSource, :createdByAdminId)`,
+          :bookingSource, :createdByAdminId, :scheduledAt, :rentalPackageHours)`,
       {
         customerId: data.customerId,
         rideType: data.rideType ?? 'local',
@@ -52,6 +52,8 @@ const rideRepo = {
         paymentMethod: data.paymentMethod ?? null,
         bookingSource: data.bookingSource ?? 'app',
         createdByAdminId: data.createdByAdminId ?? null,
+        scheduledAt: data.scheduledAt ?? null,
+        rentalPackageHours: data.rentalPackageHours ?? null,
       },
     );
     const id = res.insertId;
@@ -232,6 +234,14 @@ const rideRepo = {
 
   async clearOtp(rideId, ctx = db) {
     await ctx.query(`UPDATE rt_rides SET otp = NULL WHERE id = :rideId`, { rideId });
+  },
+
+  async setRoute(rideId, { polyline, distanceM, durationS }, ctx = db) {
+    await ctx.query(
+      `UPDATE rt_rides SET route_polyline = :polyline, distance_m = :distanceM, duration_s = :durationS
+        WHERE id = :rideId`,
+      { rideId, polyline: polyline ?? null, distanceM, durationS },
+    );
   },
 
   async attachPayment(rideId, paymentId, method, ctx = db) {
