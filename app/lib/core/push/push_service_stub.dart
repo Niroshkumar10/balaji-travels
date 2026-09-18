@@ -13,4 +13,8 @@ class PushService {
   void deliverPendingTap() {
     // nothing: no local notifications on web, so no pending tap either
   }
+
+  void deliverPendingToken() {
+    // nothing: no FCM on web, so no pending token either
+  }
 }

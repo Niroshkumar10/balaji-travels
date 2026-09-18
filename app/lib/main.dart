@@ -57,6 +57,16 @@ class _BootState extends ConsumerState<_Boot> {
     // Delivers a tap that launched the app from fully closed, if there was
     // one — safe to call unconditionally, it's a no-op otherwise.
     PushService.instance.deliverPendingTap();
+    // PushService.init() (called in main(), before this widget existed to
+    // set onToken above) already fetched the device's token and tried to
+    // deliver it against a still-null onToken — silently a no-op. Without
+    // this, an already-logged-in device would never register a token until
+    // Firebase happened to rotate it, which is unpredictable and can be a
+    // very long time. Safe to call unconditionally — a no-op if unauthenticated
+    // (registerFcmToken 401s, caught above) or if there's no token yet.
+    if (ref.read(sessionProvider).isAuthenticated) {
+      PushService.instance.deliverPendingToken();
+    }
   }
 
   void _handleNotificationTap(Map<String, dynamic> data) {
