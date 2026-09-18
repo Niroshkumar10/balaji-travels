@@ -21,6 +21,91 @@ const driverLocationRepo = require('../repositories/driverLocationRepo');
 const ALL_CATEGORIES = ['bike', 'auto', 'hatchback', 'sedan', 'suv'];
 const maskPhone = (m) => (m ? `${m.slice(0, 2)}xxxxx${m.slice(-3)}` : null);
 
+// Fallback only — every ride's duration_s is set at creation (real route
+// duration for local/outstation/round_trip, hours*3600 for rental), so this
+// should never actually be hit in practice.
+const DEFAULT_RIDE_DURATION_S = 2 * 60 * 60;
+
+// db.js's pool is configured `timezone: 'Z'` + `dateStrings: true` — every
+// DATETIME comes back as a plain "YYYY-MM-DD HH:mm:ss" string that IS a UTC
+// instant but carries no marker saying so. `new Date()` on a string like
+// that parses it as LOCAL time, which silently shifts it by the server's
+// UTC offset (5:30 in IST) — wrong instant, and specifically wrong in the
+// direction that makes two genuinely-overlapping windows look like they
+// don't overlap. Existing/requested timestamps read back from the DB MUST
+// go through this, not a bare `new Date(...)`; scheduledAt from an incoming
+// request is already a real Date/ISO string (via zod's z.coerce.date()) and
+// is exempt — only round-tripped DB strings have this problem.
+function parseDbTimestampUtc(s) {
+  if (!s) return null;
+  return s instanceof Date ? s : new Date(`${String(s).replace(' ', 'T')}Z`);
+}
+
+/** [start, end) epoch-ms window a ride occupies, for conflict checking. */
+function rideWindow(startMs, durationS) {
+  const start = startMs;
+  const end = start + (durationS ?? DEFAULT_RIDE_DURATION_S) * 1000;
+  return { start, end };
+}
+
+const windowsOverlap = (a, b) => a.start < b.end && b.start < a.end;
+
+/**
+ * Booking-conflict check — replaces the old blanket "one active ride, any
+ * type" rule with two narrower ones:
+ *
+ *   1. Local vs local is still a hard, status-based block (no time math):
+ *      any non-terminal local ride blocks a new immediate local booking,
+ *      UNLESS the existing one is itself just a future-scheduled local ride
+ *      still sitting at REQUESTED (not yet dispatched) — that one falls
+ *      through to rule 2 like any other future booking. Status, not a
+ *      duration estimate, is what decides this: a real trip can run longer
+ *      than its quoted duration_s (traffic, etc.), and only the ride's
+ *      actual status can't drift out of sync with that.
+ *
+ *   2. Everything else (local-vs-non-local, non-local-vs-non-local, and a
+ *      future-scheduled local) is a time-window overlap check: each ride
+ *      occupies [scheduled_at ?? requested_at, that + duration_s], and two
+ *      overlapping windows conflict regardless of ride_type. This is what
+ *      lets "rental tomorrow" and "local today" coexist, and blocks two
+ *      future bookings whose pickup times actually collide.
+ *
+ * @param {Array} existingRides  rideRepo.listActiveForCustomer() rows
+ * @param {{rideType:string, scheduledAt:(Date|string|null), durationS:number}} newRide
+ */
+function assertNoBookingConflict(existingRides, newRide) {
+  const newStart = newRide.scheduledAt ? new Date(newRide.scheduledAt).getTime() : Date.now();
+  const newWindow = rideWindow(newStart, newRide.durationS);
+
+  for (const existing of existingRides) {
+    if (newRide.rideType === 'local' && existing.ride_type === 'local') {
+      const existingIsFutureScheduled =
+        existing.status === 'REQUESTED' &&
+        existing.scheduled_at &&
+        parseDbTimestampUtc(existing.scheduled_at).getTime() > Date.now();
+      if (!existingIsFutureScheduled) {
+        throw ApiError.conflict('You already have an active local ride', 'HAS_ACTIVE_RIDE', {
+          rideId: existing.id,
+          status: existing.status,
+        });
+      }
+      // else: a local ride scheduled for later — fall through to rule 2.
+    }
+
+    const existingStart = existing.scheduled_at
+      ? parseDbTimestampUtc(existing.scheduled_at).getTime()
+      : parseDbTimestampUtc(existing.requested_at).getTime();
+    const existingWindow = rideWindow(existingStart, existing.duration_s);
+
+    if (windowsOverlap(existingWindow, newWindow)) {
+      throw ApiError.conflict('This booking conflicts with the timing of another ride you already have', 'BOOKING_TIME_CONFLICT', {
+        rideId: existing.id,
+        status: existing.status,
+      });
+    }
+  }
+}
+
 async function enrich(ride) {
   if (!ride) return null;
   const out = { ...ride };
@@ -123,14 +208,6 @@ const rideService = {
     // dispatchService.start() below) once that time arrives.
     scheduledAt,
   }) {
-    const active = await rideRepo.findActiveForCustomer(customer.profileId);
-    if (active) {
-      throw ApiError.conflict('You already have an active ride', 'HAS_ACTIVE_RIDE', {
-        rideId: active.id,
-        status: active.status,
-      });
-    }
-
     if (paymentMethod === 'upi') {
       if (!payment?.orderId || !payment?.paymentId) {
         throw ApiError.badRequest('Payment confirmation required for UPI bookings', 'PAYMENT_REQUIRED');
@@ -155,6 +232,9 @@ const rideService = {
     }
     const rideDistanceM = isRental ? packageQuote.distanceM : route.distanceM;
     const rideDurationS = isRental ? packageQuote.durationS : route.durationS;
+
+    const existingRides = await rideRepo.listActiveForCustomer(customer.profileId);
+    assertNoBookingConflict(existingRides, { rideType, scheduledAt, durationS: rideDurationS });
 
     let quote = isRental
       ? packageQuote
@@ -217,13 +297,21 @@ const rideService = {
       });
     }
 
-    // A ride scheduled more than a couple of minutes out stays at REQUESTED
-    // (its normal first status) — jobs/scheduledDispatch.js calls this exact
-    // same dispatchService.start() once the time is close, instead of a
-    // second dispatch path. Anything sooner (or no schedule at all) behaves
-    // exactly as before: dispatch starts immediately.
+    // Local: a ride scheduled more than a couple of minutes out stays at
+    // REQUESTED (its normal first status) — jobs/scheduledDispatch.js calls
+    // this exact same dispatchService.start() once the time is close,
+    // instead of a second dispatch path. Anything sooner (or no schedule at
+    // all) behaves exactly as before: dispatch starts immediately.
+    //
+    // Outstation/round_trip/rental: never auto-dispatched, scheduled or not.
+    // These stay at REQUESTED indefinitely — the external Admin Panel picks
+    // them up and assigns a driver directly (rt_rides.driver_id + status),
+    // the same mechanism it already uses for its own call-in bookings. See
+    // jobs/adminBookingAnnouncer.js, which watches for exactly that and
+    // backfills the OTP/route/notifications a normal dispatch accept would
+    // otherwise have produced.
     const holdForLater = scheduledAt && new Date(scheduledAt).getTime() - Date.now() > 2 * 60 * 1000;
-    if (!holdForLater) {
+    if (rideType === 'local' && !holdForLater) {
       dispatchService.start(ride).catch((err) => logger.error({ err, rideId: ride.id }, 'dispatch start failed'));
     }
     return enrich(await rideRepo.findById(ride.id));

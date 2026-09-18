@@ -141,6 +141,7 @@ class Ride {
     this.cancelReason,
     this.requestedAt,
     this.completedAt,
+    this.scheduledAt,
   });
 
   final int id;
@@ -171,6 +172,7 @@ class Ride {
   final String? cancelReason;
   final DateTime? requestedAt;
   final DateTime? completedAt;
+  final DateTime? scheduledAt;
 
   double get amountDue => finalFare ?? estFare ?? 0;
   double? get km => distanceM == null ? null : distanceM! / 1000;
@@ -206,6 +208,7 @@ class Ride {
       cancelReason: j['cancel_reason']?.toString(),
       requestedAt: asDate(j['requested_at']),
       completedAt: asDate(j['completed_at']),
+      scheduledAt: asDate(j['scheduled_at']),
     );
   }
 }

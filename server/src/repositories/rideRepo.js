@@ -79,6 +79,25 @@ const rideRepo = {
     );
   },
 
+  /**
+   * EVERY non-terminal ride for this customer (not just the latest one) —
+   * a customer can legitimately hold several at once now (e.g. a rental
+   * scheduled for tomorrow AND a local ride today), so the booking-conflict
+   * check in rideService.createRide() needs the full set to test each one,
+   * not just whichever is most recent. Kept separate from
+   * findActiveForCustomer() above, which single-ride callers (the "resume
+   * ride" banner, GET /rides/active) still rely on unchanged.
+   */
+  async listActiveForCustomer(customerId, ctx = db) {
+    return ctx.query(
+      `SELECT id, ride_type, status, scheduled_at, requested_at, duration_s
+         FROM rt_rides
+        WHERE customer_id = :customerId
+          AND status NOT IN ('COMPLETED','CUSTOMER_CANCELLED','DRIVER_CANCELLED','SYSTEM_CANCELLED','NO_DRIVERS_FOUND','PAYMENT_FAILED')`,
+      { customerId },
+    );
+  },
+
   async findActiveForDriver(driverId, ctx = db) {
     return ctx.queryOne(
       `SELECT ${RIDE_COLS} FROM rt_rides

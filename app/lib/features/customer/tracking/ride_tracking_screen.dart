@@ -362,6 +362,15 @@ class _Panel extends ConsumerWidget {
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
           child: switch (ride.status) {
+            // Outstation/round_trip/rental are never auto-dispatched (see
+            // rideService.createRide()) — they sit at REQUESTED until the
+            // Admin Panel assigns a driver directly, which can take a while
+            // for a scheduled trip. searchingDriver never happens for these
+            // types at all, so it's excluded from this guarded case and
+            // still falls through to the normal Local "Finding you a
+            // driver" pulse below for every ride type that actually uses it.
+            RideStatus.requested when ride.rideType != 'local' =>
+              _pendingAssignment(context, ref),
             RideStatus.requested ||
             RideStatus.searchingDriver =>
               _searching(context, ref),
@@ -399,6 +408,43 @@ class _Panel extends ConsumerWidget {
         const SizedBox(height: 14),
         Text('Finding you a driver',
             style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 4),
+        Text(
+          '${VehicleCategoryInfo.of(ride.vehicleCategory).name}  ·  ${distance(ride.distanceM)}  ·  ${money(ride.amountDue)}',
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton(
+            onPressed: () => _cancel(context, ref),
+            child: const Text('Cancel'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // pending admin assignment (outstation/round_trip/rental) --------------
+  Widget _pendingAssignment(BuildContext context, WidgetRef ref) {
+    final scheduled = ride.scheduledAt;
+    final isFuture = scheduled != null && scheduled.isAfter(DateTime.now());
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.pending_actions_rounded,
+            size: 42, color: AppColors.primary),
+        const SizedBox(height: 10),
+        Text('Waiting for driver assignment',
+            style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 4),
+        Text(
+          isFuture
+              ? 'Scheduled for ${dateTimeLabel(scheduled)}'
+              : 'Our team is assigning a driver for your booking.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+        ),
         const SizedBox(height: 4),
         Text(
           '${VehicleCategoryInfo.of(ride.vehicleCategory).name}  ·  ${distance(ride.distanceM)}  ·  ${money(ride.amountDue)}',
