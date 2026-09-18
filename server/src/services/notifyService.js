@@ -11,6 +11,7 @@
  */
 
 const logger = require('../infra/logger');
+const L = logger.for('notify'); // → logs/notify.log
 const notificationRepo = require('../repositories/notificationRepo');
 const userRepo = require('../repositories/userRepo');
 const firebase = require('../infra/firebase');
@@ -19,15 +20,29 @@ const realtime = require('../realtime/emitter');
 async function notify(userId, { type, title, body, data = {}, socketEvent = 'notification' }) {
   try {
     const id = await notificationRepo.create({ userId, type, title, body, data });
-    realtime.toUser(userId, socketEvent, { id, type, title, body, data, ts: Date.now() });
+
+    const delivery = realtime.toUserVerbose(userId, socketEvent, { id, type, title, body, data, ts: Date.now() });
 
     const user = await userRepo.findById(userId);
-    if (user?.fcm_token) {
-      await firebase.sendPush(user.fcm_token, { type, title, body: body ?? '', ...data });
+    let push = 'skipped_no_token';
+    if (!firebase.isEnabled) {
+      push = 'skipped_firebase_disabled';
+    } else if (user?.fcm_token) {
+      const sent = await firebase.sendPush(user.fcm_token, { type, title, body: body ?? '', ...data });
+      push = sent ? 'sent' : 'failed';
     }
+
+    L.event(push === 'sent' ? '🔔' : '🔕', 'notify', {
+      id,
+      userId,
+      type,
+      title,
+      socketDelivered: delivery.delivered,
+      push,
+    });
     return id;
   } catch (err) {
-    logger.error({ err: err.message, userId, type }, 'notify failed');
+    L.warnEvent('⚠️', 'notify failed', { err: err.message, userId, type, title });
     return null;
   }
 }
