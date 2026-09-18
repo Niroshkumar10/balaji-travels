@@ -32,10 +32,11 @@ const sqlImpl = {
   findById(id, ctx = db) {
     return ctx.queryOne(`SELECT * FROM rt_drivers WHERE id = :id LIMIT 1`, { id });
   },
-  async create(userId, ctx = db) {
+  async create(userId, { name, mobile } = {}, ctx = db) {
     const res = await ctx.query(
-      `INSERT INTO rt_drivers (user_id, kyc_status, availability) VALUES (:userId, 'pending', 'offline')`,
-      { userId },
+      `INSERT INTO rt_drivers (user_id, name, mobile, kyc_status, availability)
+       VALUES (:userId, :name, :mobile, 'pending', 'offline')`,
+      { userId, name: name ?? null, mobile: mobile ?? null },
     );
     await ctx.query(`INSERT INTO rt_driver_wallet (driver_id, balance) VALUES (:id, 0)`, {
       id: res.insertId,
@@ -112,9 +113,11 @@ const memImpl = {
   async findById(id) {
     return store.find('drivers', (d) => d.id === Number(id));
   },
-  async create(userId) {
+  async create(userId, { name, mobile } = {}) {
     const d = store.insert('drivers', {
       user_id: Number(userId),
+      name: name ?? null,
+      mobile: mobile ?? null,
       kyc_status: 'pending',
       kyc_reviewed_by: null,
       kyc_reviewed_at: null,
