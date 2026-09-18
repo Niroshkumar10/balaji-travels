@@ -76,6 +76,7 @@ class DriverProfile {
     this.ratingCount = 0,
     this.isOnline = false,
     this.availability = 'offline',
+    this.serviceTypes = const ['local'],
     this.currentVehicleId,
     this.vehicles = const [],
   });
@@ -98,6 +99,8 @@ class DriverProfile {
   final int ratingCount;
   final bool isOnline;
   final String availability; // offline | available | on_trip
+  /// Which bookings this driver receives — any of 'local'/'rental'/'outstation'.
+  final List<String> serviceTypes;
   final int? currentVehicleId;
   final List<Vehicle> vehicles;
 
@@ -126,6 +129,11 @@ class DriverProfile {
       ratingCount: asInt(d['rating_count']),
       isOnline: asBool(d['is_online']),
       availability: d['availability']?.toString() ?? 'offline',
+      serviceTypes: (d['service_types']?.toString() ?? 'local')
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList(),
       currentVehicleId: asIntOrNull(d['current_vehicle_id']),
       vehicles: asList(j['vehicles']).map(Vehicle.fromJson).toList(),
     );

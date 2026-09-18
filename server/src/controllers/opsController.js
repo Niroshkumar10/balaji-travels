@@ -14,12 +14,13 @@ const fareConfigRepo = require('../repositories/fareConfigRepo');
 const userRepo = require('../repositories/userRepo');
 const customerRepo = require('../repositories/customerRepo');
 const rideService = require('../services/rideService');
+const adminAssignmentService = require('../services/adminAssignmentService');
 
 module.exports = {
   async listDrivers(req, res) {
     const status = req.query.kyc;
     const rows = await db.query(
-      `SELECT d.id, d.kyc_status, d.rating_avg, d.rating_count, d.is_online, d.availability,
+      `SELECT d.id, d.kyc_status, d.rating_avg, d.rating_count, d.is_online, d.availability, d.service_types,
               u.mobile, u.name, u.email,
               (SELECT COUNT(*) FROM rt_vehicles v WHERE v.driver_id = d.id AND v.deleted_at IS NULL) AS vehicle_count
          FROM rt_drivers d JOIN rt_users u ON u.id = d.user_id
@@ -28,6 +29,26 @@ module.exports = {
       status ? { status } : {},
     );
     res.json({ success: true, drivers: rows });
+  },
+
+  /** Ops override of which bookings a driver receives (driver picks by default; this overrides it). */
+  async setDriverServices(req, res) {
+    const driverId = Number(req.params.driverId);
+    const { serviceTypes, adminId } = req.body;
+    const driver = await driverRepo.findById(driverId);
+    if (!driver) throw ApiError.notFound('Driver not found');
+    await driverRepo.setServiceTypes(driverId, serviceTypes);
+    await db.query(
+      `INSERT INTO rt_admin_audit (admin_id, action, entity, entity_id, before_val, after_val)
+       VALUES (:adminId, 'service_types_update', 'driver', :id, :before, :after)`,
+      {
+        adminId: adminId ?? null,
+        id: String(driverId),
+        before: JSON.stringify({ service_types: driver.service_types }),
+        after: JSON.stringify({ service_types: serviceTypes.join(',') }),
+      },
+    );
+    res.json({ success: true, driverId, serviceTypes });
   },
 
   async setKyc(req, res) {
@@ -117,7 +138,7 @@ module.exports = {
 
   async listRides(req, res) {
     const rows = await db.query(
-      `SELECT id, ride_ref, status, vehicle_category, customer_id, driver_id,
+      `SELECT id, ride_ref, status, ride_type, vehicle_category, customer_id, driver_id,
               est_fare, final_fare, requested_at, completed_at
          FROM rt_rides
         ${req.query.status ? 'WHERE status = :status' : ''}
@@ -125,5 +146,20 @@ module.exports = {
       req.query.status ? { status: req.query.status } : {},
     );
     res.json({ success: true, rides: rows });
+  },
+
+  /** Ranked eligible-driver list for a rental/outstation ride awaiting assignment. */
+  async rideCandidates(req, res) {
+    const rideId = Number(req.params.rideId);
+    const candidates = await adminAssignmentService.candidates(rideId);
+    res.json({ success: true, rideId, candidates });
+  },
+
+  /** Admin hand-picks a driver — offered through the normal accept/reject flow. */
+  async assignRideDriver(req, res) {
+    const rideId = Number(req.params.rideId);
+    const { driverId, adminId } = req.body;
+    const ride = await adminAssignmentService.assign(rideId, driverId, adminId);
+    res.json({ success: true, ride });
   },
 };

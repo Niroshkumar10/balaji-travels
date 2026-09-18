@@ -16,7 +16,7 @@
 const ApiError = require('../utils/apiError');
 
 const STATUSES = [
-  'REQUESTED', 'SEARCHING_DRIVER', 'DRIVER_ASSIGNED', 'DRIVER_ARRIVING',
+  'REQUESTED', 'SEARCHING_DRIVER', 'PENDING_ADMIN_ASSIGNMENT', 'DRIVER_ASSIGNED', 'DRIVER_ARRIVING',
   'DRIVER_ARRIVED', 'RIDE_STARTED', 'RIDE_IN_PROGRESS', 'DRIVER_COMPLETED',
   'PAYMENT_PENDING', 'COMPLETED',
   'CUSTOMER_CANCELLED', 'DRIVER_CANCELLED', 'SYSTEM_CANCELLED',
@@ -35,7 +35,7 @@ const DRIVER_ACTIVE = new Set([
 ]);
 
 const CUSTOMER_CANCELLABLE = new Set([
-  'REQUESTED', 'SEARCHING_DRIVER', 'DRIVER_ASSIGNED', 'DRIVER_ARRIVING', 'DRIVER_ARRIVED',
+  'REQUESTED', 'SEARCHING_DRIVER', 'PENDING_ADMIN_ASSIGNMENT', 'DRIVER_ASSIGNED', 'DRIVER_ARRIVING', 'DRIVER_ARRIVED',
 ]);
 const DRIVER_CANCELLABLE = new Set(['DRIVER_ASSIGNED', 'DRIVER_ARRIVING', 'DRIVER_ARRIVED']);
 
@@ -46,6 +46,16 @@ const TRANSITIONS = {
   search:            { from: new Set(['REQUESTED']),                       to: 'SEARCHING_DRIVER', actor: 'system' },
   assign:            { from: new Set(['SEARCHING_DRIVER']),                to: 'DRIVER_ASSIGNED',  actor: 'system', tsField: 'assigned_at' },
   no_drivers:        { from: new Set(['SEARCHING_DRIVER', 'REQUESTED']),   to: 'NO_DRIVERS_FOUND', actor: 'system' },
+  // Rental/outstation bookings skip auto-dispatch entirely and wait here for
+  // an ops admin to hand-pick a driver (see adminAssignmentService).
+  await_admin:       { from: new Set(['REQUESTED']),                       to: 'PENDING_ADMIN_ASSIGNMENT', actor: 'system' },
+  // Admin picked a candidate — this reuses the exact same SEARCHING_DRIVER →
+  // DRIVER_ASSIGNED offer/accept path a local ride's auto-dispatch uses, just
+  // seeded with one driver instead of a distance-sorted queue.
+  admin_offer:       { from: new Set(['PENDING_ADMIN_ASSIGNMENT']),        to: 'SEARCHING_DRIVER', actor: 'system' },
+  // That single offer was rejected or timed out — back to the admin queue
+  // instead of NO_DRIVERS_FOUND, so the admin can pick someone else.
+  admin_offer_failed: { from: new Set(['SEARCHING_DRIVER']),               to: 'PENDING_ADMIN_ASSIGNMENT', actor: 'system' },
   driver_enroute:    { from: new Set(['DRIVER_ASSIGNED']),                 to: 'DRIVER_ARRIVING',  actor: 'driver' },
   driver_arrived:    { from: new Set(['DRIVER_ASSIGNED', 'DRIVER_ARRIVING']), to: 'DRIVER_ARRIVED', actor: 'driver', tsField: 'driver_arrived_at' },
   start_ride:        { from: new Set(['DRIVER_ARRIVED']),                  to: 'RIDE_STARTED',     actor: 'driver', tsField: 'started_at', needsOtp: true },

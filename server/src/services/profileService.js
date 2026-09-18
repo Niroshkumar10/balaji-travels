@@ -56,6 +56,7 @@ const profileService = {
       if (!driver) throw ApiError.notFound('Driver profile not found');
       await userRepo.updateProfile(userId, { name: patch.name, email: patch.email }, tx);
       await driverRepo.updateProfile(driver.id, { licenseNo: patch.licenseNo }, tx);
+      if (patch.serviceTypes) await driverRepo.setServiceTypes(driver.id, patch.serviceTypes, tx);
     });
     return this.getDriver(userId);
   },

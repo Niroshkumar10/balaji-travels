@@ -1,12 +1,15 @@
 'use strict';
 
 const db = require('../infra/db');
+const env = require('../config/env');
 const logger = require('../infra/logger');
 const ApiError = require('../utils/apiError');
 const geo = require('./geoService');
 const fareService = require('./fareService');
 const promoService = require('./promoService');
 const dispatchService = require('./dispatchService');
+const adminAssignmentService = require('./adminAssignmentService');
+const { serviceFor } = require('../utils/serviceType');
 const paymentService = require('./paymentService');
 const notifyService = require('./notifyService');
 const rentalService = require('./rentalService');
@@ -297,23 +300,36 @@ const rideService = {
       });
     }
 
-    // Local: a ride scheduled more than a couple of minutes out stays at
-    // REQUESTED (its normal first status) — jobs/scheduledDispatch.js calls
-    // this exact same dispatchService.start() once the time is close,
-    // instead of a second dispatch path. Anything sooner (or no schedule at
-    // all) behaves exactly as before: dispatch starts immediately.
-    //
-    // Outstation/round_trip/rental: never auto-dispatched, scheduled or not.
-    // These stay at REQUESTED indefinitely — the external Admin Panel picks
-    // them up and assigns a driver directly (rt_rides.driver_id + status),
-    // the same mechanism it already uses for its own call-in bookings. See
-    // jobs/adminBookingAnnouncer.js, which watches for exactly that and
-    // backfills the OTP/route/notifications a normal dispatch accept would
-    // otherwise have produced.
-    const holdForLater = scheduledAt && new Date(scheduledAt).getTime() - Date.now() > 2 * 60 * 1000;
-    if (rideType === 'local' && !holdForLater) {
-      dispatchService.start(ride).catch((err) => logger.error({ err, rideId: ride.id }, 'dispatch start failed'));
+    if (serviceFor(rideType) === 'local') {
+      // A ride scheduled more than a couple of minutes out stays at
+      // REQUESTED (its normal first status) — jobs/scheduledDispatch.js
+      // calls this exact same dispatchService.start() once the time is
+      // close, instead of a second dispatch path. Anything sooner (or no
+      // schedule at all) behaves exactly as before: dispatch starts
+      // immediately.
+      const holdForLater = scheduledAt && new Date(scheduledAt).getTime() - Date.now() > 2 * 60 * 1000;
+      if (!holdForLater) {
+        dispatchService.start(ride).catch((err) => logger.error({ err, rideId: ride.id }, 'dispatch start failed'));
+      }
+    } else if (env.ADMIN_ASSIGNMENT_MODE === 'in_app') {
+      // Rental/outstation/round_trip, in-app admin assignment: queued into
+      // PENDING_ADMIN_ASSIGNMENT immediately, even when scheduled for later
+      // (manual assignment needs lead time, unlike the nearest-driver
+      // auto-cascade above) — an ops admin then hand-picks a driver via
+      // GET/POST /ops/rides/:id/candidates|assign (adminAssignmentService),
+      // which reuses the normal offer/accept flow. See env.js's
+      // ADMIN_ASSIGNMENT_MODE for why this branch exists alongside the one
+      // below instead of replacing it.
+      adminAssignmentService
+        .queueForAdmin(ride)
+        .catch((err) => logger.error({ err, rideId: ride.id }, 'queueForAdmin failed'));
     }
+    // else (default 'external_panel'): rental/outstation/round_trip is left
+    // at REQUESTED, scheduled or not — the external Admin Panel assigns a
+    // driver directly (rt_rides.driver_id + status), the same mechanism it
+    // already uses for its own call-in bookings. jobs/adminBookingAnnouncer.js
+    // watches for exactly that and backfills the OTP/route/notifications a
+    // normal dispatch accept would otherwise have produced. No action here.
     return enrich(await rideRepo.findById(ride.id));
   },
 

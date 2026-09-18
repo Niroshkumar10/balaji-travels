@@ -6,7 +6,7 @@ const validate = require('../../middleware/validate');
 const authenticate = require('../../middleware/auth');
 const requireRole = require('../../middleware/role');
 const asyncHandler = require('../../utils/asyncHandler');
-const { lat, lng, vehicleCategory, paymentMethod } = require('../../utils/validators');
+const { lat, lng, vehicleCategory, paymentMethod, rideType } = require('../../utils/validators');
 const ctrl = require('../../controllers/rideController');
 
 const router = Router();
@@ -66,7 +66,7 @@ router.post(
       pickup: place,
       drop: place,
       vehicleCategory,
-      rideType: z.enum(['local', 'outstation', 'round_trip', 'rental']).optional(),
+      rideType: rideType.optional(),
       paymentMethod: paymentMethod.optional(),
       promoCode: z.string().trim().min(3).max(40).optional(),
       // Required when paymentMethod is 'upi' — the Razorpay payment already

@@ -40,6 +40,7 @@ extension on _Filter {
         _Filter.upcoming => const {
             RideStatus.requested,
             RideStatus.searchingDriver,
+            RideStatus.pendingAdminAssignment,
             RideStatus.driverAssigned,
             RideStatus.driverArriving,
           }.contains(s),

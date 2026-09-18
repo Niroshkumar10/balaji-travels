@@ -3,6 +3,7 @@ import 'json.dart';
 enum RideStatus {
   requested,
   searchingDriver,
+  pendingAdminAssignment,
   driverAssigned,
   driverArriving,
   driverArrived,
@@ -21,6 +22,7 @@ enum RideStatus {
   static RideStatus parse(String? s) => switch (s) {
         'REQUESTED' => RideStatus.requested,
         'SEARCHING_DRIVER' => RideStatus.searchingDriver,
+        'PENDING_ADMIN_ASSIGNMENT' => RideStatus.pendingAdminAssignment,
         'DRIVER_ASSIGNED' => RideStatus.driverAssigned,
         'DRIVER_ARRIVING' => RideStatus.driverArriving,
         'DRIVER_ARRIVED' => RideStatus.driverArrived,
@@ -55,6 +57,7 @@ enum RideStatus {
 
   String get label => switch (this) {
         RideStatus.requested || RideStatus.searchingDriver => 'Finding a driver',
+        RideStatus.pendingAdminAssignment => 'Driver will be assigned shortly',
         RideStatus.driverAssigned || RideStatus.driverArriving => 'Driver on the way',
         RideStatus.driverArrived => 'Driver has arrived',
         RideStatus.rideStarted || RideStatus.rideInProgress => 'On the way to destination',

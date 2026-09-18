@@ -15,6 +15,7 @@ import '../driver_controller.dart';
 import '../earnings/earnings_controller.dart';
 import '../onboarding/payment_details_screen.dart';
 import '../profile/driver_account_detail_screen.dart';
+import '../profile/trip_preferences_screen.dart';
 
 /// Home tab of the driver shell. A real, live map fills the background —
 /// centred on the driver's own GPS fix via positionStreamProvider, the same
@@ -478,6 +479,15 @@ class DriverDrawer extends ConsumerWidget {
                     icon: Icons.description_rounded,
                     title: 'Documents',
                     onTap: () => _openAccountDetail(context, 'documents'),
+                  ),
+                  AppTile(
+                    icon: Icons.tune_rounded,
+                    title: 'Trip preferences',
+                    onTap: () {
+                      final navigator = Navigator.of(context);
+                      navigator.pop();
+                      navigator.push(MaterialPageRoute(builder: (_) => const TripPreferencesScreen()));
+                    },
                   ),
                   AppTile(
                     icon: Icons.account_balance_rounded,

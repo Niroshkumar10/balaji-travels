@@ -25,6 +25,15 @@ const _vehicleChoices = [
   ('Electric Car', 'Drive an electric car', Icons.electric_car_rounded, 'suv'),
 ];
 
+/// Which bookings a driver receives — matches rt_drivers.service_types.
+/// A driver can pick any combination; local is on by default since it's
+/// what every driver already did before this existed.
+const _serviceChoices = [
+  ('local', 'Local rides', 'Point-to-point rides within the city', Icons.location_city_rounded),
+  ('rental', 'Rentals', 'Hourly/package bookings (e.g. 4hr/40km)', Icons.schedule_rounded),
+  ('outstation', 'Outstation trips', 'One-way or round trips between cities', Icons.alt_route_rounded),
+];
+
 /// Post-login intro: basic profile, then vehicle category. Lands on the
 /// Registration Checklist once done. Skipped entirely for a driver who
 /// already has a name/vehicle on file — see DriverOnboardingEntry.
@@ -42,6 +51,7 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
   String? _city;
   DateTime? _dob;
   String _vehicleCategory = 'hatchback';
+  final Set<String> _serviceTypes = {'local'};
   bool _busy = false;
 
   @override
@@ -52,7 +62,7 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
   }
 
   void _next() {
-    if (_page == 1) {
+    if (_page == 2) {
       _finish();
       return;
     }
@@ -81,6 +91,7 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
 
   bool get _canContinue => switch (_page) {
         0 => _name.text.trim().isNotEmpty,
+        2 => _serviceTypes.isNotEmpty,
         _ => true,
       };
 
@@ -91,9 +102,12 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
       if (_city != null) 'city': _city,
       'vehicleCategory': _vehicleCategory,
     });
-    // Name is a real backend field — save it now so the rest of the wizard
-    // (and the dashboard, if the driver backs out) already reflects it.
-    final res = await ref.read(profileRepoProvider).updateDriver({'name': _name.text.trim()});
+    // Name and serviceTypes are real backend fields — save them now so the
+    // rest of the wizard (and dispatch) already reflects them.
+    final res = await ref.read(profileRepoProvider).updateDriver({
+      'name': _name.text.trim(),
+      'serviceTypes': _serviceTypes.toList(),
+    });
     if (!mounted) return;
     setState(() => _busy = false);
     res.when(
@@ -129,7 +143,7 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
                   controller: _pageCtrl,
                   physics: const NeverScrollableScrollPhysics(),
                   onPageChanged: (i) => setState(() => _page = i),
-                  children: [_profilePage(), _vehiclePage()],
+                  children: [_profilePage(), _vehiclePage(), _servicesPage()],
                 ),
               ),
               Padding(
@@ -138,7 +152,7 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
                   children: [
                     SmoothPageIndicator(
                       controller: _pageCtrl,
-                      count: 2,
+                      count: 3,
                       effect: const WormEffect(dotWidth: 8, dotHeight: 8, activeDotColor: AppColors.primary, dotColor: AppColors.line),
                     ),
                     const SizedBox(height: 16),
@@ -209,6 +223,31 @@ class _DriverIntroPagesState extends ConsumerState<DriverIntroPages> {
       ],
     );
   }
+
+  Widget _servicesPage() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
+      children: [
+        const Text('What trips do you want?', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 6),
+        const Text(
+          'Pick any combination — you can change this any time from your profile.',
+          style: TextStyle(color: AppColors.inkSoft),
+        ),
+        const SizedBox(height: 24),
+        ..._serviceChoices.map((s) => _VehicleTile(
+              title: s.$2,
+              subtitle: s.$3,
+              icon: s.$4,
+              multiSelect: true,
+              selected: _serviceTypes.contains(s.$1),
+              onTap: () => setState(() {
+                _serviceTypes.contains(s.$1) ? _serviceTypes.remove(s.$1) : _serviceTypes.add(s.$1);
+              }),
+            )),
+      ],
+    );
+  }
 }
 
 class _VehicleTile extends StatelessWidget {
@@ -218,12 +257,14 @@ class _VehicleTile extends StatelessWidget {
     required this.icon,
     required this.selected,
     required this.onTap,
+    this.multiSelect = false,
   });
   final String title;
   final String subtitle;
   final IconData icon;
   final bool selected;
   final VoidCallback onTap;
+  final bool multiSelect;
 
   @override
   Widget build(BuildContext context) {
@@ -258,7 +299,9 @@ class _VehicleTile extends StatelessWidget {
                 ),
               ),
               Icon(
-                selected ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
+                multiSelect
+                    ? (selected ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded)
+                    : (selected ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded),
                 color: selected ? AppColors.primary : AppColors.inkSoft,
               ),
             ],
