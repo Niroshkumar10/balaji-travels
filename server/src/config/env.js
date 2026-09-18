@@ -87,7 +87,7 @@ const schema = z
     // Radius for the queue-exhaustion re-query. 0 = no distance limit
     // (offer to ANY online driver of the right category, nearest first).
     DISPATCH_EXPAND_RADIUS_KM: int(0),
-    DISPATCH_OFFER_TIMEOUT_MS: int(25000),
+    DISPATCH_OFFER_TIMEOUT_MS: int(40000),
     DISPATCH_MAX_DRIVERS: int(8),
     DISPATCH_NO_DRIVER_TIMEOUT_MS: int(120000),
     DRIVER_OFFLINE_SWEEP_SECONDS: int(120),

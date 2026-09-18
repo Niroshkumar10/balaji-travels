@@ -18,7 +18,8 @@ class NotificationsListView extends ConsumerWidget {
   const NotificationsListView({super.key});
 
   IconData _iconFor(String type) => switch (type) {
-        'driver_assigned' || 'ride_assigned' => Icons.directions_car_rounded,
+        'driver_assigned' || 'ride_assigned' || 'ride_confirmed' || 'booking_accepted' =>
+          Icons.directions_car_rounded,
         'driver_arrived' => Icons.pin_drop_rounded,
         'ride_started' => Icons.play_circle_rounded,
         'ride_completed' || 'payment_pending' => Icons.check_circle_rounded,

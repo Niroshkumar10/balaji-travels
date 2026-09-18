@@ -450,6 +450,12 @@ async function handleOfferResponse(rideId, driverId, accept) {
       driverLocation: drvLoc ? { lat: Number(drvLoc.lat), lng: Number(drvLoc.lng), bearing: drvLoc.bearing } : null,
       etaToPickupSec: etaSec,
     });
+    await notifyService.notify(s.customerUserId, {
+      type: 'booking_accepted',
+      title: 'Your booking is accepted',
+      body: 'A driver has accepted your ride.',
+      data: { rideId: String(rideId) },
+    });
     notifyService.notify(s.customerUserId, {
       type: 'driver_assigned',
       title: 'Driver on the way',
@@ -468,6 +474,12 @@ async function handleOfferResponse(rideId, driverId, accept) {
       distanceM: ride.distance_m,
       estFare: ride.est_fare,
       otp, // shown so the driver knows what to ask for
+    });
+    notifyService.notify(result.driver.user_id, {
+      type: 'ride_confirmed',
+      title: 'Ride confirmed',
+      body: `Pickup at ${ride.pickup_addr ?? 'the customer’s location'}`,
+      data: { rideId: String(rideId) },
     });
 
     // everyone else who was offered

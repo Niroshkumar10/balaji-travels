@@ -22,10 +22,19 @@ String? routeForNotification(Map<String, dynamic> data, AppRole? role) {
     case 'ride_offer':
       return rideId == null ? null : '/d/offer/$rideId';
 
-    // Customer-only — driver_assigned/no_drivers/driver_arrived/ride_started
-    // are only ever notified to the customer (see dispatchService.js,
-    // rideService.js, adminBookingAnnouncer.js) — the driver already has the
-    // ride open via ride:assigned/ride:status sockets, no push needed there.
+    // Sent once a driver is confirmed on the ride — 'ride_assigned' for an
+    // admin-panel booking (no offer/accept step of its own), 'ride_confirmed'
+    // right after the driver accepts a normal dispatch offer.
+    case 'ride_assigned':
+    case 'ride_confirmed':
+      return rideId == null ? null : '/d/ride/$rideId';
+
+    // Customer-only — driver_assigned/no_drivers/driver_arrived/ride_started/
+    // booking_accepted are only ever notified to the customer (see
+    // dispatchService.js, rideService.js, adminBookingAnnouncer.js) — the
+    // driver already has the ride open via ride:assigned/ride:status sockets,
+    // no push needed there.
+    case 'booking_accepted':
     case 'driver_assigned':
     case 'no_drivers':
     case 'driver_arrived':
