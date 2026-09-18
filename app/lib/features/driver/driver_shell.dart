@@ -41,6 +41,7 @@ class _DriverShellState extends ConsumerState<DriverShell> with WidgetsBindingOb
   late int _tab = widget.initialTab;
   StreamSubscription<PendingOffer>? _offerSub;
   int? _lastShownOfferId;
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
   void initState() {
@@ -116,10 +117,15 @@ class _DriverShellState extends ConsumerState<DriverShell> with WidgetsBindingOb
     });
 
     return Scaffold(
+      key: _scaffoldKey,
+      // The drawer lives on this Scaffold (not DriverHomeTab's own) so it
+      // covers the whole screen when opened — including the bottom nav bar
+      // below, which used to stay visible/tappable underneath it.
+      drawer: const DriverDrawer(),
       body: IndexedStack(
         index: _tab,
         children: [
-          const DriverHomeTab(),
+          DriverHomeTab(onMenuTap: () => _scaffoldKey.currentState?.openDrawer()),
           EarningsScreen(onBack: () => setState(() => _tab = 0)),
           DriverHistoryScreen(onBack: () => setState(() => _tab = 0)),
           DriverProfileScreen(onBack: () => setState(() => _tab = 0)),

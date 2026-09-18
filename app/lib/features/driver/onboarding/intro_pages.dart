@@ -10,8 +10,8 @@ import '../../../state/providers.dart';
 import '../driver_controller.dart';
 
 /// Categories a driver can register with. Bike/Auto/Car map straight onto
-/// the backend's vehicle categories; "Commercial Car" (a bigger multi-seat
-/// vehicle for hire, e.g. an SUV/van) maps onto 'suv', the closest real fit.
+/// the backend's vehicle categories; "Commercial Car" maps onto 'sedan' and
+/// "Electric Car" onto 'suv' — the closest real fit for each.
 const _cities = [
   'Chennai', 'Coimbatore', 'Madurai', 'Tiruchirappalli', 'Salem',
   'Bengaluru', 'Hyderabad', 'Mumbai', 'Delhi', 'Pune',
@@ -21,7 +21,8 @@ const _vehicleChoices = [
   ('Bike', 'Motorcycle or scooter', Icons.two_wheeler_rounded, 'bike'),
   ('Auto Rickshaw', 'Auto rickshaw', Icons.electric_rickshaw_rounded, 'auto'),
   ('Car', 'Drive your car', Icons.directions_car_filled_rounded, 'hatchback'),
-  ('Commercial Car', 'Drive or manage multiple cars', Icons.airport_shuttle_rounded, 'suv'),
+  ('Commercial Car', 'Drive or manage multiple cars', Icons.airport_shuttle_rounded, 'sedan'),
+  ('Electric Car', 'Drive an electric car', Icons.electric_car_rounded, 'suv'),
 ];
 
 /// Post-login intro: basic profile, then vehicle category. Lands on the

@@ -21,14 +21,14 @@ import '../profile/driver_account_detail_screen.dart';
 /// location plumbing the customer home screen and the in-trip map use — with
 /// the online/offline status card floating on top of it.
 class DriverHomeTab extends ConsumerStatefulWidget {
-  const DriverHomeTab({super.key});
+  const DriverHomeTab({super.key, this.onMenuTap});
+  final VoidCallback? onMenuTap;
   @override
   ConsumerState<DriverHomeTab> createState() => _DriverHomeTabState();
 }
 
 class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
   final _mapKey = GlobalKey<MapViewState>();
-  final _scaffoldKey = GlobalKey<ScaffoldState>();
   LatLng _center = const LatLng(12.9716, 77.5946); // fallback until GPS fixes
   bool _hasFix = false;
 
@@ -57,11 +57,9 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
       _mapKey.currentState?.moveTo(_center, zoom: 16);
     });
 
-    return Scaffold(
-      key: _scaffoldKey,
-      backgroundColor: Colors.white,
-      drawer: const _DriverDrawer(),
-      body: SafeArea(
+    return ColoredBox(
+      color: Colors.white,
+      child: SafeArea(
         child: Column(
           children: [
             Container(
@@ -71,18 +69,10 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
                 children: [
                   IconButton(
                     icon: const Icon(Icons.menu_rounded),
-                    onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                    onPressed: widget.onMenuTap,
                   ),
                   const Text('Sri Balaji Travels', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w800, fontSize: 18)),
                   const Spacer(),
-                  // TEMPORARY: opens the in-app Socket.IO diagnostic log
-                  // viewer (no ADB needed). Remove once the driver-side
-                  // socket-connection investigation is closed out.
-                  IconButton(
-                    icon: const Icon(Icons.bug_report_outlined),
-                    tooltip: 'Socket diagnostics',
-                    onPressed: () => context.push('/d/diagnostics'),
-                  ),
                   IconButton(
                     icon: const Icon(Icons.notifications_none_rounded),
                     onPressed: () => context.push('/d/notifications'),
@@ -394,8 +384,12 @@ const _languages = ['English', 'தமிழ் (Tamil)', 'తెలుగు (T
 /// details, language, notifications, safety, help, wallet & payouts) plus
 /// Switch to Ride / Log out. Opened via the hamburger on the Home tab's top
 /// bar, mirroring the rider side's own drawer (_CustomerDrawer).
-class _DriverDrawer extends ConsumerWidget {
-  const _DriverDrawer();
+/// Public so the outer shell Scaffold (driver_shell.dart) can host it — the
+/// drawer needs to belong to the SAME Scaffold as the bottom nav bar, or
+/// opening it only covers this tab's content while the bottom nav stays
+/// visible/tappable underneath, overlapping the drawer.
+class DriverDrawer extends ConsumerWidget {
+  const DriverDrawer({super.key});
 
   Future<void> _pickLanguage(BuildContext context) async {
     final current = (await DriverOnboardingStore.get())['language'] as String?;

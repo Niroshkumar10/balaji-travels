@@ -124,7 +124,7 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
     if (pts.isEmpty) return;
     pts.length == 1
         ? map.moveTo(pts.first, zoom: 13)
-        : map.fitTo(pts, padding: 80);
+        : map.fitTo(pts, padding: 80, minZoom: 6);
   }
 
   Future<void> _pickSchedule() async {
@@ -286,7 +286,18 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
     return Scaffold(
       body: LoadingOverlay(
         busy: _busy,
+        // crossAxisAlignment.stretch is load-bearing here, not cosmetic: a
+        // Column defaults to sizing each child to its own width and
+        // centering it, and a Stack's width (when not already forced tight)
+        // is computed only from its NON-positioned children — the
+        // Positioned.fill(MapView) doesn't count. That left the map's Stack
+        // sized to its tiny back-button child, centered, with the map
+        // rendering into that narrow box: a thin strip with white gutters
+        // on both sides. Stretching forces tight full-width constraints
+        // down through Expanded into the Stack, so the map actually gets
+        // the full width to fill.
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(
               flex: 5,

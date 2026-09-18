@@ -6,6 +6,8 @@ import 'package:intl/intl.dart';
 import '../../../core/store/driver_onboarding_store.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/common_widgets.dart';
+import '../../../core/widgets/rt_app_bar.dart';
+import '../../../state/providers.dart';
 import '../driver_controller.dart';
 import '../profile/driver_account_detail_screen.dart';
 import 'payment_details_screen.dart';
@@ -44,6 +46,18 @@ class _ReviewSubmitScreenState extends ConsumerState<ReviewSubmitScreen> {
     if (mounted) setState(() {});
   }
 
+  /// This screen is reached both via a push (from the checklist, once
+  /// everything's done — canPop() is true there) and via a go (from
+  /// Application Status's own back button, which replaces history — nothing
+  /// to pop to there). Rather than a default back button that works in one
+  /// entry path and silently does nothing in the other, this always
+  /// deliberately lands on the Ride/Drive picker, logging out first so the
+  /// router's auth-redirect doesn't bounce it straight back.
+  Future<void> _back() async {
+    await ref.read(authControllerProvider.notifier).logout();
+    if (mounted) context.go('/role');
+  }
+
   Future<void> _submit() async {
     setState(() => _busy = true);
     final id = ref.read(driverProfileProvider).valueOrNull?.id ?? DateTime.now().millisecondsSinceEpoch % 100000;
@@ -61,7 +75,7 @@ class _ReviewSubmitScreenState extends ConsumerState<ReviewSubmitScreen> {
     final dob = DriverOnboardingStore.get();
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Review your information')),
+      appBar: RtAppBar(title: 'Review your information', onBack: _back),
       body: LoadingOverlay(
         busy: _busy,
         child: FutureBuilder<Map<String, dynamic>>(
