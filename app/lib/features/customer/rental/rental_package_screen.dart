@@ -48,6 +48,11 @@ class _RentalPackageScreenState extends ConsumerState<RentalPackageScreen> {
   DateTime? _scheduledAt; // null = now
   bool _busy = false;
 
+  // The real driving route between pickup and drop, purely for the map line
+  // — rental pricing is package-based (hours/km), not this route's distance,
+  // so this comes from a separate /rides/estimate call just for the polyline.
+  String? _polyline;
+
   String get _bookingCategory => rentalBookingCategory(widget.args.vehicle.category, widget.args.vehicle.variant);
 
   LatLng get _pickupLL => LatLng(widget.args.pickup.lat, widget.args.pickup.lng);
@@ -58,8 +63,20 @@ class _RentalPackageScreenState extends ConsumerState<RentalPackageScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadPackages();
+      _loadRoute();
       _fitMap();
     });
+  }
+
+  Future<void> _loadRoute() async {
+    final res = await ref
+        .read(rideRepoProvider)
+        .estimate(pickup: widget.args.pickup, drop: widget.args.drop);
+    if (!mounted) return;
+    res.when(
+      ok: (est) => setState(() => _polyline = est.route.polyline),
+      err: (_) {/* map still works with just the two markers */},
+    );
   }
 
   @override
@@ -197,6 +214,15 @@ class _RentalPackageScreenState extends ConsumerState<RentalPackageScreen> {
                 markers: {
                   Marker(markerId: const MarkerId('p'), position: _pickupLL, icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen)),
                   Marker(markerId: const MarkerId('d'), position: _dropLL, icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed)),
+                },
+                polylines: {
+                  if (_polyline != null && _polyline!.isNotEmpty)
+                    Polyline(
+                      polylineId: const PolylineId('route'),
+                      points: MapView.decodePolyline(_polyline!),
+                      color: AppColors.mapRoute,
+                      width: 5,
+                    ),
                 },
               ),
             ),

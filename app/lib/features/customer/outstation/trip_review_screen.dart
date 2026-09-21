@@ -75,6 +75,10 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
   bool _faresLoading = true;
   String? _fareError;
 
+  // Real driving route from that same /rides/estimate call — same route the
+  // Local "choose your ride" screen draws, not an invented straight line.
+  String? _polyline;
+
   double? get _selectedFare => _categoryFares[_selected.bookingCategory];
 
   String get _effectiveRideType => _oneWay ? 'outstation' : 'round_trip';
@@ -97,6 +101,7 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
     res.when(
       ok: (est) => setState(() {
         _categoryFares = {for (final o in est.options) o.category: o.fare};
+        _polyline = est.route.polyline;
         _faresLoading = false;
         _fareError = null;
       }),
@@ -323,11 +328,15 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
                               icon: mk.drop,
                               anchor: const Offset(0.5, 1)),
                       },
-                      // No route polyline here — for an outstation trip the
-                      // real driving route isn't known yet at this review
-                      // stage, and a straight pickup-to-drop line across a
-                      // long distance just reads as a stray diagonal streak
-                      // across the map rather than a real route.
+                      polylines: {
+                        if (_polyline != null && _polyline!.isNotEmpty)
+                          Polyline(
+                            polylineId: const PolylineId('route'),
+                            points: MapView.decodePolyline(_polyline!),
+                            color: AppColors.mapRoute,
+                            width: 5,
+                          ),
+                      },
                       onMapCreated: (_) => WidgetsBinding.instance
                           .addPostFrameCallback((_) => _fitMap()),
                     ),
