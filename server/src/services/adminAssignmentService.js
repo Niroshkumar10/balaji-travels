@@ -21,6 +21,7 @@ const customerRepo = require('../repositories/customerRepo');
 const driverLocationRepo = require('../repositories/driverLocationRepo');
 const dispatchService = require('./dispatchService');
 const { serviceFor } = require('../utils/serviceType');
+const { windowForRideRow } = require('../utils/rideWindow');
 
 const adminAssignmentService = {
   /** REQUESTED → PENDING_ADMIN_ASSIGNMENT, right after ride creation. */
@@ -47,11 +48,15 @@ const adminAssignmentService = {
     if (!['PENDING_ADMIN_ASSIGNMENT', 'SEARCHING_DRIVER'].includes(ride.status)) {
       throw ApiError.conflict(`Ride is '${ride.status}' — not awaiting admin assignment`, 'NOT_PENDING_ASSIGNMENT');
     }
+    // Vehicle category is deliberately not passed as a filter — see
+    // candidatesForAdmin()'s doc comment: Rental/Outstation/Round Trip
+    // ignore category entirely, only Local (which never reaches this
+    // function) cares about it.
     const rows = await driverLocationRepo.candidatesForAdmin({
       lat: Number(ride.pickup_lat),
       lng: Number(ride.pickup_lng),
-      category: ride.vehicle_category,
       serviceType: serviceFor(ride.ride_type),
+      newRideWindow: windowForRideRow(ride),
     });
     return rows.map((r) => ({
       driverId: r.driver_id,
@@ -61,6 +66,7 @@ const adminAssignmentService = {
       ratingCount: r.rating_count,
       vehicle: { category: r.vehicle_category, plateNo: r.plate_no, model: r.model },
       distanceM: Math.round(r.distance_m),
+      currentlyOnTrip: !!r.currently_on_trip,
       lastSeenAt: r.updated_at,
     }));
   },

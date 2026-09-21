@@ -37,7 +37,9 @@ class _State extends ConsumerState<DriverHistoryScreen> {
       };
 
   bool _matchesRange(Ride r) {
-    final at = r.requestedAt;
+    // A scheduled ride's requestedAt is just when it was booked, not when it
+    // actually happens — filter by the real pickup date when one was set.
+    final at = r.scheduledAt ?? r.requestedAt;
     if (at == null || _range == 'all') return true;
     final now = DateTime.now();
     if (_range == 'today') {
@@ -124,7 +126,7 @@ class _TripCard extends StatelessWidget {
                     Text(ride.dropAddr ?? ride.ref, maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.titleSmall),
                     const SizedBox(height: 2),
                     Text(
-                      '${dateTimeLabel(ride.requestedAt)} · ${distance(ride.distanceM)}',
+                      '${dateTimeLabel(ride.scheduledAt ?? ride.requestedAt)} · ${distance(ride.distanceM)}',
                       style: const TextStyle(color: AppColors.inkSoft, fontSize: 12),
                     ),
                   ],

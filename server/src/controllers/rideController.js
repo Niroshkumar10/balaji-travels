@@ -64,6 +64,10 @@ module.exports = {
     res.json({ success: true, ride: await rideService.getActiveRide(requester(req)) });
   },
 
+  async activeAll(req, res) {
+    res.json({ success: true, rides: await rideService.listActiveRides(requester(req)) });
+  },
+
   async list(req, res) {
     const { limit, offset } = req.query;
     res.json({ success: true, rides: await rideService.listRides(requester(req), { limit, offset }) });

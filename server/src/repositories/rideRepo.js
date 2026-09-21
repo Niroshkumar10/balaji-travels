@@ -98,6 +98,22 @@ const rideRepo = {
     );
   },
 
+  /**
+   * Same non-terminal set as listActiveForCustomer(), but full ride rows —
+   * for the customer home screen, which now shows one card per concurrent
+   * active ride (one per service type) instead of a single "resume ride"
+   * banner. See rideService.listActiveRides().
+   */
+  async findAllActiveForCustomer(customerId, ctx = db) {
+    return ctx.query(
+      `SELECT ${RIDE_COLS} FROM rt_rides
+        WHERE customer_id = :customerId
+          AND status NOT IN ('COMPLETED','CUSTOMER_CANCELLED','DRIVER_CANCELLED','SYSTEM_CANCELLED','NO_DRIVERS_FOUND','PAYMENT_FAILED')
+        ORDER BY id DESC`,
+      { customerId },
+    );
+  },
+
   async findActiveForDriver(driverId, ctx = db) {
     return ctx.queryOne(
       `SELECT ${RIDE_COLS} FROM rt_rides
