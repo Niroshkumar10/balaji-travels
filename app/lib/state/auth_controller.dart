@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/auth/session.dart';
 import '../core/net/result.dart';
+import '../core/push/push_service.dart';
 import '../core/realtime/socket_client.dart';
 import '../core/realtime/socket_diagnostics.dart';
 import '../core/repos/auth_repository.dart';
@@ -138,6 +139,12 @@ class AuthController extends StateNotifier<AuthState> {
           _socket.disconnect();
           _logAuthIdentity('verifyOtp', role: role, userId: value.user.id, profileId: value.profileId);
           _socket.connect(value.token, userId: value.user.id, role: role.name);
+          // A fresh sign-up/login is exactly the case the boot-time delivery
+          // in main.dart can't cover: PushService already had a token before
+          // this session existed to register it against. Re-deliver it now
+          // that there's a valid JWT — a no-op if there's no token yet, or if
+          // it already went through at boot for an already-logged-in device.
+          PushService.instance.deliverPendingToken();
           _emit(AuthState(
             status: AuthStatus.authenticated,
             role: role,

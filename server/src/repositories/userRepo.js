@@ -63,6 +63,15 @@ const sqlImpl = {
         WHERE id = :userId`,
       { userId, name: name ?? null, email: email ?? null },
     );
+    // Keep rt_drivers.name (see 0003_driver_contact_columns.sql) from
+    // drifting — a no-op UPDATE for a customer (WHERE matches no row) or
+    // when name isn't part of this call (COALESCE keeps the existing value).
+    if (name != null) {
+      await ctx.query(
+        `UPDATE rt_drivers SET name = :name WHERE user_id = :userId`,
+        { userId, name },
+      );
+    }
   },
   async touch(userId, ctx = db) {
     await ctx.query(`UPDATE rt_users SET last_active_at = NOW() WHERE id = :userId`, { userId });
@@ -127,6 +136,10 @@ const memImpl = {
     if (name != null) patch.name = name;
     if (email != null) patch.email = email;
     store.update(u, patch);
+    if (name != null) {
+      const d = store.find('drivers', (x) => x.user_id === Number(userId));
+      if (d) store.update(d, { name });
+    }
   },
   async touch(userId) {
     const u = store.find('users', (x) => x.id === Number(userId));

@@ -38,6 +38,7 @@ const driverLocationRepo = require('../repositories/driverLocationRepo');
 const customerRepo = require('../repositories/customerRepo');
 const userRepo = require('../repositories/userRepo');
 const { serviceFor, driverServes } = require('../utils/serviceType');
+const { windowForRideRow, windowsOverlap } = require('../utils/rideWindow');
 
 const OFFER_TIMEOUT_MS = env.DISPATCH_OFFER_TIMEOUT_MS;
 const NO_DRIVER_TIMEOUT_MS = env.DISPATCH_NO_DRIVER_TIMEOUT_MS;
@@ -331,13 +332,24 @@ async function offerNext(rideId) {
   const drv = await driverRepo.findById(cand.driverId);
   // Service is rechecked too: the driver may have switched this service off
   // in his trip preferences after the queue was built.
-  if (
-    !drv ||
-    drv.is_online !== 1 ||
-    drv.availability !== 'available' ||
-    drv.kyc_status !== 'approved' ||
-    !driverServes(drv, s.ride.ride_type)
-  ) {
+  //
+  // `availability === 'on_trip'` is a hard disqualifier for mode 'auto'
+  // (Local auto-dispatch — unchanged, real-time only) but NOT automatically
+  // for mode 'admin' (Rental/Outstation/Round Trip, admin-picked): a driver
+  // mid-trip right now can still be assigned to something scheduled hours
+  // from now. Only a genuine overlap between that current trip's time
+  // window and this ride's own window disqualifies them — see
+  // driverLocationRepo.candidatesForAdmin()'s doc comment, which applies
+  // the exact same rule when building the candidate list the admin picked
+  // from; this is that same check re-verified at actual send time.
+  let onTripConflict = false;
+  if (drv && drv.availability === 'on_trip' && s.mode === 'admin') {
+    const activeRide = await rideRepo.findActiveForDriver(cand.driverId);
+    onTripConflict = activeRide ? windowsOverlap(windowForRideRow(activeRide), windowForRideRow(s.ride)) : false;
+  }
+  const availabilityOk = drv && (drv.availability === 'available' || (drv.availability === 'on_trip' && s.mode === 'admin' && !onTripConflict));
+
+  if (!drv || drv.is_online !== 1 || !availabilityOk || drv.kyc_status !== 'approved' || !driverServes(drv, s.ride.ride_type)) {
     // Named single reason, on top of the raw fields already logged — a
     // vehicle-category mismatch or stale GPS can never land here (both are
     // already filtered out of the queue by buildQueue()/nearby(), so a
@@ -347,8 +359,8 @@ async function offerNext(rideId) {
       ? 'driver_not_found'
       : drv.is_online !== 1
         ? 'offline'
-        : drv.availability !== 'available'
-          ? `unavailable(${drv.availability})`
+        : !availabilityOk
+          ? (onTripConflict ? 'on_trip_time_conflict' : `unavailable(${drv.availability})`)
           : drv.kyc_status !== 'approved'
             ? 'kyc_not_approved'
             : 'service_type_not_served';
@@ -540,6 +552,12 @@ async function handleOfferResponse(rideId, driverId, accept) {
       driverLocation: drvLoc ? { lat: Number(drvLoc.lat), lng: Number(drvLoc.lng), bearing: drvLoc.bearing } : null,
       etaToPickupSec: etaSec,
     });
+    await notifyService.notify(s.customerUserId, {
+      type: 'booking_accepted',
+      title: 'Your booking is accepted',
+      body: 'A driver has accepted your ride.',
+      data: { rideId: String(rideId) },
+    });
     notifyService.notify(s.customerUserId, {
       type: 'driver_assigned',
       title: 'Driver on the way',
@@ -558,6 +576,12 @@ async function handleOfferResponse(rideId, driverId, accept) {
       distanceM: ride.distance_m,
       estFare: ride.est_fare,
       otp, // shown so the driver knows what to ask for
+    });
+    notifyService.notify(result.driver.user_id, {
+      type: 'ride_confirmed',
+      title: 'Ride confirmed',
+      body: `Pickup at ${ride.pickup_addr ?? 'the customer’s location'}`,
+      data: { rideId: String(rideId) },
     });
 
     // everyone else who was offered

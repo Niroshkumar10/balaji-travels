@@ -77,6 +77,18 @@ class RideRepository {
     );
   }
 
+  /// Every concurrent active ride (one per service type is now possible —
+  /// a local ride, a rental and an outstation trip can all be in progress
+  /// at once). Used by the home screen's "ride in progress" cards; unlike
+  /// active() above, this is never null — an empty list means none.
+  Future<Result<List<Ride>>> activeAll() async {
+    final res = await _api.get('/rides/active/all');
+    return res.when<Result<List<Ride>>>(
+      ok: (j) => Ok(asList(j['rides']).map(Ride.fromJson).toList()),
+      err: (e) => Err(e),
+    );
+  }
+
   Future<Result<Ride>> get(int id) async => _ride(await _api.get('/rides/$id'));
 
   Future<Result<List<Ride>>> list({int limit = 20, int offset = 0}) async {

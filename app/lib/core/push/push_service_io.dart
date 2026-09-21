@@ -40,6 +40,16 @@ class PushService {
   /// frame, so navigation has somewhere to go).
   Map<String, dynamic>? _pendingTap;
 
+  /// The token [init] already fetched before anything had wired up [onToken]
+  /// — main() awaits init() fully, then runApp() constructs the widget tree
+  /// that sets onToken, by which point init()'s own `onToken?.call(token)`
+  /// already ran against a still-null callback and silently did nothing. Same
+  /// shape as [_pendingTap]/[deliverPendingTap] below; deliver this once the
+  /// caller has actually wired [onToken], or the very first token — the one
+  /// that matters for a fresh install — is lost until the next unpredictable
+  /// refresh, which in practice can be days or longer.
+  String? _pendingToken;
+
   static const _channel = AndroidNotificationChannel(
     'rt_rides',
     'Ride updates',
@@ -89,8 +99,14 @@ class PushService {
     FirebaseMessaging.onMessageOpenedApp.listen((m) => onTap?.call(m.data));
 
     final token = await messaging.getToken();
-    if (token != null) onToken?.call(token);
-    messaging.onTokenRefresh.listen((t) => onToken?.call(t));
+    if (token != null) {
+      _pendingToken = token;
+      onToken?.call(token);
+    }
+    messaging.onTokenRefresh.listen((t) {
+      _pendingToken = t;
+      onToken?.call(t);
+    });
 
     _ready = true;
   }
@@ -103,6 +119,18 @@ class PushService {
     if (data == null) return;
     _pendingTap = null;
     onTap?.call(data);
+  }
+
+  /// Call once, after wiring [onToken], to deliver the token [init] already
+  /// fetched before there was anywhere to send it. Safe to call
+  /// unconditionally — no-op if there wasn't one. Deliberately does NOT clear
+  /// [_pendingToken] (unlike [deliverPendingTap]'s one-shot tap): a login
+  /// happening after this call still needs the same token to register it
+  /// against the newly-authenticated user.
+  void deliverPendingToken() {
+    final token = _pendingToken;
+    if (token == null) return;
+    onToken?.call(token);
   }
 
   Map<String, dynamic>? _decode(String? payload) {

@@ -90,7 +90,10 @@ class RideDetailScreen extends ConsumerWidget {
                       ],
                     ),
                     const SizedBox(height: 4),
-                    Text(dateTimeLabel(ride.requestedAt),
+                    // A scheduled booking's requestedAt is just when it was
+                    // booked, not when the ride actually happens — show the
+                    // real pickup time when one was set.
+                    Text(dateTimeLabel(ride.scheduledAt ?? ride.requestedAt),
                         style: const TextStyle(color: AppColors.inkSoft)),
                     const SizedBox(height: 16),
                     SectionCard(

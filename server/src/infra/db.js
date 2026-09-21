@@ -45,6 +45,27 @@ if (!MEMORY) {
     charset: 'utf8mb4',
   });
 
+  // `timezone: 'Z'` above only controls how mysql2 itself converts JS Date
+  // objects on the way in/out — it does NOT change what MySQL's own NOW() /
+  // CURRENT_TIMESTAMP return inside the server. This DB's session/global
+  // time_zone is 'SYSTEM' (the host's OS timezone, IST here), confirmed live:
+  // NOW() returned 15:37 IST while UTC_TIMESTAMP() returned 10:07 UTC at the
+  // same instant. That meant every DEFAULT CURRENT_TIMESTAMP column
+  // (requested_at, created_at, updated_at, ...) was silently stored as IST,
+  // while any column the application sets explicitly (scheduled_at, via a
+  // real JS Date) was stored as UTC — two different timezones, same-looking
+  // naive strings, no marker distinguishing them. Force every pooled
+  // connection's session timezone to UTC so NOW()/CURRENT_TIMESTAMP agree
+  // with the application-supplied side from here on — see utils/rideWindow.js,
+  // which assumes every DATETIME string it reads is UTC.
+  // The 'connection' event on a mysql2/promise pool still hands back the
+  // underlying callback-style connection, not a promise-wrapped one.
+  pool.on('connection', (connection) => {
+    connection.query("SET time_zone = '+00:00'", (err) => {
+      if (err) logger.error({ err: err.message }, 'failed to set session time_zone on new DB connection');
+    });
+  });
+
   makeApi = (executor) => ({
     async query(sql, params = {}) {
       const [rows] = await executor.query(sql, params);

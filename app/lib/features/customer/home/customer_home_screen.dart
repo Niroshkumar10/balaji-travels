@@ -15,6 +15,7 @@ import '../outstation/outstation_plan_screen.dart';
 import '../rental/rental_plan_screen.dart';
 import '../ride_request/where_to_screen.dart';
 import '../ride_session_controller.dart';
+import '../active_rides_controller.dart';
 import 'vehicle_picker_sheet.dart';
 
 enum _RideType { local, rental, outstation }
@@ -50,6 +51,7 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(rideSessionProvider.notifier).loadActive();
+      ref.read(activeRidesProvider.notifier).refresh();
     });
   }
 
@@ -347,8 +349,7 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final session = ref.watch(rideSessionProvider);
-    final activeRide = session.ride;
+    final activeRides = ref.watch(activeRidesProvider);
 
     // A ride the customer never booked themselves in this app session (e.g.
     // an Admin Panel call-in booking made on their behalf) has no moment
@@ -401,12 +402,20 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
                     },
                   ),
                 ),
-                if (activeRide != null && activeRide.status.isActive)
+                if (activeRides.isNotEmpty)
                   Positioned(
                     left: 12,
                     right: 12,
                     top: 12,
-                    child: _ResumeBanner(ride: activeRide),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (final ride in activeRides) ...[
+                          _ResumeBanner(ride: ride),
+                          if (ride != activeRides.last) const SizedBox(height: 8),
+                        ],
+                      ],
+                    ),
                   ),
                 Positioned(
                   right: 12,
@@ -561,8 +570,23 @@ class _ResumeBanner extends StatelessWidget {
   const _ResumeBanner({required this.ride});
   final Ride ride;
 
+  static const _typeLabels = {
+    'local': 'Local',
+    'rental': 'Rental',
+    'outstation': 'Trip',
+    'round_trip': 'Trip',
+  };
+
+  static const _typeIcons = {
+    'local': Icons.directions_car_filled_rounded,
+    'rental': Icons.schedule_rounded,
+    'outstation': Icons.alt_route_rounded,
+    'round_trip': Icons.alt_route_rounded,
+  };
+
   @override
   Widget build(BuildContext context) {
+    final typeLabel = _typeLabels[ride.rideType] ?? 'Ride';
     return Material(
       color: AppColors.brand,
       borderRadius: BorderRadius.circular(14),
@@ -574,14 +598,14 @@ class _ResumeBanner extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
             children: [
-              const Icon(Icons.directions_car_filled_rounded, color: Colors.white),
+              Icon(_typeIcons[ride.rideType] ?? Icons.directions_car_filled_rounded, color: Colors.white),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Ride in progress',
-                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                    Text('$typeLabel · Ride in progress',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
                     Text(ride.status.label,
                         style: const TextStyle(color: Colors.white70, fontSize: 12)),
                   ],
