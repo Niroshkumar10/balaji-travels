@@ -1,12 +1,18 @@
 'use strict';
 
 /**
- * Real scheduled dispatch — a ride booked for a future date/time (see
+ * Real scheduled dispatch — a LOCAL ride booked for a future date/time (see
  * rideService.createRide()'s `scheduledAt` handling) sits at REQUESTED with
  * dispatch deliberately not started yet. This job is the other half: once a
  * scheduled ride's time is close, it calls the EXACT SAME
  * dispatchService.start() every normal ride uses — no second dispatch/offer
  * engine, this only decides *when* to call the one that already exists.
+ *
+ * Scoped to ride_type='local' only. A scheduled outstation/round_trip/rental
+ * ride also sits at REQUESTED, but on purpose stays there forever (or until
+ * the external Admin Panel assigns a driver) — its scheduled time arriving
+ * is not a signal to auto-dispatch it; see rideService.createRide() and
+ * adminBookingAnnouncer.js.
  */
 
 const env = require('../config/env');
@@ -23,6 +29,7 @@ async function poll() {
   const rows = await db.query(
     `SELECT id FROM rt_rides
       WHERE status = 'REQUESTED'
+        AND ride_type = 'local'
         AND scheduled_at IS NOT NULL
         AND scheduled_at <= NOW()
       ORDER BY scheduled_at ASC

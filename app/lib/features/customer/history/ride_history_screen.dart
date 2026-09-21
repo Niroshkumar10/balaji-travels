@@ -184,7 +184,10 @@ class RideHistoryTile extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      dateTimeLabel(ride.requestedAt),
+                      // A scheduled booking's requestedAt is just when it was
+                      // booked, not when the ride actually happens — show the
+                      // real pickup time when one was set.
+                      dateTimeLabel(ride.scheduledAt ?? ride.requestedAt),
                       style: const TextStyle(color: AppColors.inkSoft, fontSize: 12),
                     ),
                   ],

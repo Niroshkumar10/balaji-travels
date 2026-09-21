@@ -87,7 +87,7 @@ const schema = z
     // Radius for the queue-exhaustion re-query. 0 = no distance limit
     // (offer to ANY online driver of the right category, nearest first).
     DISPATCH_EXPAND_RADIUS_KM: int(0),
-    DISPATCH_OFFER_TIMEOUT_MS: int(25000),
+    DISPATCH_OFFER_TIMEOUT_MS: int(40000),
     DISPATCH_MAX_DRIVERS: int(8),
     DISPATCH_NO_DRIVER_TIMEOUT_MS: int(120000),
     DRIVER_OFFLINE_SWEEP_SECONDS: int(120),
@@ -103,6 +103,22 @@ const schema = z
     // (see jobs/scheduledDispatch.js) — a scheduled ride isn't time-critical
     // the way a live GPS ping is, so a slower poll than the two above is fine.
     SCHEDULED_DISPATCH_POLL_MS: int(30_000),
+    // Rental/outstation/round_trip driver assignment has two parallel, real
+    // implementations in this codebase (see rideService.js's dispatch-trigger
+    // comment) — which one actually runs is a deliberate, reversible choice,
+    // not a code change:
+    //   'external_panel' (default) — never auto-dispatched; the ride sits at
+    //     REQUESTED for the existing external Admin Panel to assign a driver
+    //     directly (raw rt_rides writes), which adminBookingAnnouncer.js
+    //     notices and backfills OTP/route/notifications for. Proven, already
+    //     running in production, needs no new admin UI.
+    //   'in_app' — queued into PENDING_ADMIN_ASSIGNMENT via
+    //     adminAssignmentService.queueForAdmin(); an admin calls
+    //     GET/POST /ops/rides/:id/candidates|assign to hand-pick a driver,
+    //     which reuses the normal offer/accept flow. No admin UI in this
+    //     repo calls those endpoints yet, so switching this on requires one
+    //     to exist first (or driving them manually).
+    ADMIN_ASSIGNMENT_MODE: z.enum(['external_panel', 'in_app']).default('external_panel'),
 
     // Platform commission on each completed ride's fare (percent).
     COMMISSION_PCT: int(20).pipe(z.number().int().min(0).max(90)),

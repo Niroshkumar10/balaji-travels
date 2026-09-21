@@ -130,7 +130,7 @@ const authService = {
       } else {
         profile = await driverRepo.findByUserId(user.id, tx);
         if (!profile) {
-          profileId = await driverRepo.create(user.id, tx);
+          profileId = await driverRepo.create(user.id, { name: user.name, mobile: user.mobile }, tx);
           profile = await driverRepo.findByUserId(user.id, tx);
         } else {
           profileId = profile.id;

@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../infra/db');
+const env = require('../config/env');
 const logger = require('../infra/logger');
 const ApiError = require('../utils/apiError');
 const geo = require('./geoService');
@@ -19,9 +20,76 @@ const driverRepo = require('../repositories/driverRepo');
 const vehicleRepo = require('../repositories/vehicleRepo');
 const userRepo = require('../repositories/userRepo');
 const driverLocationRepo = require('../repositories/driverLocationRepo');
+const { parseDbTimestampUtc, rideWindow, windowsOverlap } = require('../utils/rideWindow');
 
 const ALL_CATEGORIES = ['bike', 'auto', 'hatchback', 'sedan', 'suv'];
 const maskPhone = (m) => (m ? `${m.slice(0, 2)}xxxxx${m.slice(-3)}` : null);
+
+/**
+ * Booking-conflict check — scoped to same service type only (local/rental/
+ * outstation, via serviceFor() — round_trip is unified with outstation).
+ * A customer can hold one active ride PER service type concurrently (e.g. a
+ * local ride in progress AND a rental booked for right now AND an
+ * outstation trip) — those show as separate "ride in progress" cards on the
+ * home screen (rideService.listActiveRides()). Two DIFFERENT service types
+ * never conflict with each other, regardless of time overlap.
+ *
+ * Within the same service type, two rules:
+ *
+ *   1. Local vs local is still a hard, status-based block (no time math):
+ *      any non-terminal local ride blocks a new immediate local booking,
+ *      UNLESS the existing one is itself just a future-scheduled local ride
+ *      still sitting at REQUESTED (not yet dispatched) — that one falls
+ *      through to rule 2 like any other future booking. Status, not a
+ *      duration estimate, is what decides this: a real trip can run longer
+ *      than its quoted duration_s (traffic, etc.), and only the ride's
+ *      actual status can't drift out of sync with that.
+ *
+ *   2. Rental vs rental, outstation vs outstation, and a future-scheduled
+ *      local: a time-window overlap check. Each ride occupies
+ *      [scheduled_at ?? requested_at, that + duration_s], and two
+ *      overlapping windows of the SAME service type conflict. This is what
+ *      lets "rental tomorrow" and "rental today" coexist, while blocking two
+ *      rentals whose pickup times actually collide.
+ *
+ * @param {Array} existingRides  rideRepo.listActiveForCustomer() rows
+ * @param {{rideType:string, scheduledAt:(Date|string|null), durationS:number}} newRide
+ */
+function assertNoBookingConflict(existingRides, newRide) {
+  const newStart = newRide.scheduledAt ? new Date(newRide.scheduledAt).getTime() : Date.now();
+  const newWindow = rideWindow(newStart, newRide.durationS);
+  const newService = serviceFor(newRide.rideType);
+
+  for (const existing of existingRides) {
+    if (serviceFor(existing.ride_type) !== newService) continue; // different service type — never conflicts
+
+    if (newRide.rideType === 'local' && existing.ride_type === 'local') {
+      const existingIsFutureScheduled =
+        existing.status === 'REQUESTED' &&
+        existing.scheduled_at &&
+        parseDbTimestampUtc(existing.scheduled_at).getTime() > Date.now();
+      if (!existingIsFutureScheduled) {
+        throw ApiError.conflict('You already have an active local ride', 'HAS_ACTIVE_RIDE', {
+          rideId: existing.id,
+          status: existing.status,
+        });
+      }
+      // else: a local ride scheduled for later — fall through to rule 2.
+    }
+
+    const existingStart = existing.scheduled_at
+      ? parseDbTimestampUtc(existing.scheduled_at).getTime()
+      : parseDbTimestampUtc(existing.requested_at).getTime();
+    const existingWindow = rideWindow(existingStart, existing.duration_s);
+
+    if (windowsOverlap(existingWindow, newWindow)) {
+      throw ApiError.conflict('This booking conflicts with the timing of another ride you already have', 'BOOKING_TIME_CONFLICT', {
+        rideId: existing.id,
+        status: existing.status,
+      });
+    }
+  }
+}
 
 async function enrich(ride) {
   if (!ride) return null;
@@ -125,14 +193,6 @@ const rideService = {
     // dispatchService.start() below) once that time arrives.
     scheduledAt,
   }) {
-    const active = await rideRepo.findActiveForCustomer(customer.profileId);
-    if (active) {
-      throw ApiError.conflict('You already have an active ride', 'HAS_ACTIVE_RIDE', {
-        rideId: active.id,
-        status: active.status,
-      });
-    }
-
     if (paymentMethod === 'upi') {
       if (!payment?.orderId || !payment?.paymentId) {
         throw ApiError.badRequest('Payment confirmation required for UPI bookings', 'PAYMENT_REQUIRED');
@@ -157,6 +217,9 @@ const rideService = {
     }
     const rideDistanceM = isRental ? packageQuote.distanceM : route.distanceM;
     const rideDurationS = isRental ? packageQuote.durationS : route.durationS;
+
+    const existingRides = await rideRepo.listActiveForCustomer(customer.profileId);
+    assertNoBookingConflict(existingRides, { rideType, scheduledAt, durationS: rideDurationS });
 
     let quote = isRental
       ? packageQuote
@@ -230,19 +293,25 @@ const rideService = {
       if (!holdForLater) {
         dispatchService.start(ride).catch((err) => logger.error({ err, rideId: ride.id }, 'dispatch start failed'));
       }
-    } else {
-      // Rental and outstation (+ round trip) skip the auto-dispatch cascade
-      // entirely — an ops admin hand-picks a driver instead (see
-      // adminAssignmentService). Queued for admin immediately even when
-      // scheduled for later: manual assignment needs lead time, unlike the
-      // nearest-driver auto-cascade above, so there's no "hold" here —
-      // queueForAdmin's REQUESTED → PENDING_ADMIN_ASSIGNMENT transition
-      // also takes it out of scheduledDispatch.js's REQUESTED-only query,
-      // so the two paths never double-handle the same ride.
+    } else if (env.ADMIN_ASSIGNMENT_MODE === 'in_app') {
+      // Rental/outstation/round_trip, in-app admin assignment: queued into
+      // PENDING_ADMIN_ASSIGNMENT immediately, even when scheduled for later
+      // (manual assignment needs lead time, unlike the nearest-driver
+      // auto-cascade above) — an ops admin then hand-picks a driver via
+      // GET/POST /ops/rides/:id/candidates|assign (adminAssignmentService),
+      // which reuses the normal offer/accept flow. See env.js's
+      // ADMIN_ASSIGNMENT_MODE for why this branch exists alongside the one
+      // below instead of replacing it.
       adminAssignmentService
         .queueForAdmin(ride)
         .catch((err) => logger.error({ err, rideId: ride.id }, 'queueForAdmin failed'));
     }
+    // else (default 'external_panel'): rental/outstation/round_trip is left
+    // at REQUESTED, scheduled or not — the external Admin Panel assigns a
+    // driver directly (rt_rides.driver_id + status), the same mechanism it
+    // already uses for its own call-in bookings. jobs/adminBookingAnnouncer.js
+    // watches for exactly that and backfills the OTP/route/notifications a
+    // normal dispatch accept would otherwise have produced. No action here.
     return enrich(await rideRepo.findById(ride.id));
   },
 
@@ -259,6 +328,19 @@ const rideService = {
         ? await rideRepo.findActiveForCustomer(requester.profileId)
         : await rideRepo.findActiveForDriver(requester.profileId);
     return ride ? enrich(ride) : null;
+  },
+
+  /**
+   * Every concurrent active ride for a customer (one per service type is now
+   * possible — see assertNoBookingConflict()), for the home screen's list of
+   * "ride in progress" cards. A driver can only ever have one active ride at
+   * a time, so this is customer-only; getActiveRide() above is unchanged and
+   * still used everywhere a single ride is expected (driver, resume-banner).
+   */
+  async listActiveRides(requester) {
+    if (requester.role !== 'customer') throw ApiError.forbidden('Customer only', 'CUSTOMER_ONLY');
+    const rides = await rideRepo.findAllActiveForCustomer(requester.profileId);
+    return Promise.all(rides.map(enrich));
   },
 
   async listRides(requester, opts) {

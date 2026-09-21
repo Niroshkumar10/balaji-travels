@@ -3,6 +3,7 @@
 const db = require('../infra/db');
 const env = require('../config/env');
 const { boundingBox, haversineMeters } = require('../services/geoService');
+const { windowsOverlap, windowForRideRow } = require('../utils/rideWindow');
 
 const driverLocationRepo = {
   /** Upsert the driver's last-known position (called on every heartbeat/ping). */
@@ -222,19 +223,41 @@ const driverLocationRepo = {
   },
 
   /**
-   * Same eligibility rules as `nearby()` (online, available, KYC-approved,
-   * fresh GPS, right vehicle category, serves the requested service type) —
-   * used to show an ops admin a ranked "who can take this booking" list for
-   * a rental/outstation ride, so it includes name/mobile/rating for display
-   * and has NO radius limit (an admin manually assigning a long-distance
-   * trip cares about "who's eligible", not "who's closest right now").
+   * Eligible drivers for an ops admin to hand-pick from, for a rental/
+   * outstation/round-trip booking. Deliberately NOT the same eligibility
+   * rules as `nearby()` (Local auto-dispatch):
+   *
+   *   - Vehicle category is never filtered here — these ride types are
+   *     admin-assigned specifically because "closest matching category"
+   *     doesn't apply the way it does for an immediate Local ride; a
+   *     Hatchback driver with Rental enabled can take a Rental booked as
+   *     Sedan. Category is still returned, for the admin to see, just not
+   *     used to exclude anyone.
+   *   - `availability = 'on_trip'` does NOT disqualify a driver outright —
+   *     a driver mid-trip right now can still be a perfectly good pick for
+   *     something scheduled hours from now. Instead, every online driver's
+   *     CURRENT active ride (if any, via rt_rides.active_driver_id) is
+   *     fetched and its time window compared against the ride being
+   *     assigned (`newRideWindow`); only a genuine overlap disqualifies.
+   *     A driver with no active ride, or one that doesn't overlap, is a
+   *     normal candidate — `currentlyOnTrip` just tells the admin which.
+   *
+   * `is_online`, KYC-approved, fresh GPS, and serves the requested service
+   * type are still hard requirements, same as `nearby()`. No radius limit —
+   * an admin manually assigning a trip cares about "who's eligible", not
+   * "who's closest right now".
+   *
+   * @param {{lat:number, lng:number, serviceType:string,
+   *   newRideWindow:{start:number,end:number}, staleSeconds?:number, limit?:number}} p
    */
-  async candidatesForAdmin({ lat, lng, category, serviceType, staleSeconds = env.DRIVER_LOCATION_STALE_SECONDS, limit = 20 }, ctx = db) {
+  async candidatesForAdmin({ lat, lng, serviceType, newRideWindow, staleSeconds = env.DRIVER_LOCATION_STALE_SECONDS, limit = 20 }, ctx = db) {
     const rows = await ctx.query(
-      `SELECT d.id AS driver_id, d.rating_avg, d.rating_count, d.current_vehicle_id,
+      `SELECT d.id AS driver_id, d.rating_avg, d.rating_count, d.current_vehicle_id, d.availability,
               u.name, u.mobile,
               v.id AS vehicle_id, v.category AS vehicle_category, v.plate_no, v.model,
-              dl.lat, dl.lng, dl.updated_at
+              dl.lat, dl.lng, dl.updated_at,
+              ar.id AS active_ride_id, ar.scheduled_at AS active_scheduled_at,
+              ar.requested_at AS active_requested_at, ar.duration_s AS active_duration_s
          FROM rt_driver_locations dl
          JOIN rt_drivers d  ON d.id = dl.driver_id
          JOIN rt_users u    ON u.id = d.user_id
@@ -242,19 +265,28 @@ const driverLocationRepo = {
                            AND v.driver_id = d.id
                            AND v.is_active = 1
                            AND v.deleted_at IS NULL
+         LEFT JOIN rt_rides ar ON ar.active_driver_id = d.id
         WHERE d.is_online = 1
-          AND d.availability = 'available'
           AND d.kyc_status = 'approved'
           AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
-          AND v.category = :category
           AND FIND_IN_SET(:serviceType, d.service_types) > 0`,
-      { staleSeconds, category, serviceType },
+      { staleSeconds, serviceType },
     );
 
     return rows
+      .filter((r) => {
+        if (!r.active_ride_id) return true; // nothing active — always a candidate
+        const activeWindow = windowForRideRow({
+          scheduled_at: r.active_scheduled_at,
+          requested_at: r.active_requested_at,
+          duration_s: r.active_duration_s,
+        });
+        return !windowsOverlap(activeWindow, newRideWindow);
+      })
       .map((r) => ({
         ...r,
         distance_m: haversineMeters(lat, lng, Number(r.lat), Number(r.lng)),
+        currently_on_trip: !!r.active_ride_id,
       }))
       .sort((a, b) => a.distance_m - b.distance_m)
       .slice(0, limit);

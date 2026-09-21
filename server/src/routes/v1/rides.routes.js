@@ -90,6 +90,7 @@ router.post(
 );
 
 router.get('/active', asyncHandler(ctrl.active));
+router.get('/active/all', requireRole('customer'), asyncHandler(ctrl.activeAll));
 router.get(
   '/',
   validate({

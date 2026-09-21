@@ -37,6 +37,18 @@ const notificationRepo = {
     );
   },
 
+  /** Has this user already been sent this notification type for this ride? */
+  async existsForRide(userId, type, rideId, ctx = db) {
+    const row = await ctx.queryOne(
+      `SELECT id FROM rt_notifications
+        WHERE user_id = :userId AND type = :type
+          AND JSON_UNQUOTE(JSON_EXTRACT(data, '$.rideId')) = :rideId
+        LIMIT 1`,
+      { userId, type, rideId: String(rideId) },
+    );
+    return !!row;
+  },
+
   async unreadCount(userId, ctx = db) {
     const row = await ctx.queryOne(
       `SELECT COUNT(*) AS n FROM rt_notifications WHERE user_id = :userId AND read_at IS NULL`,
