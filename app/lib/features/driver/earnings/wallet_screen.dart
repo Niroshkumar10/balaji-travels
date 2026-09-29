@@ -52,7 +52,20 @@ class WalletScreen extends ConsumerWidget {
     final payouts = ref.watch(payoutsProvider);
 
     return Scaffold(
-      appBar: const RtAppBar(title: 'Wallet & payouts', fallbackRoute: '/d/dashboard'),
+      appBar: RtAppBar(
+        title: 'Wallet & payouts',
+        fallbackRoute: '/d/dashboard',
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Refresh',
+            onPressed: () {
+              ref.invalidate(todayEarningsProvider);
+              ref.invalidate(payoutsProvider);
+            },
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
