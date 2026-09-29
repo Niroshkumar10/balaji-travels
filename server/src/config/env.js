@@ -119,6 +119,12 @@ const schema = z
     //     repo calls those endpoints yet, so switching this on requires one
     //     to exist first (or driving them manually).
     ADMIN_ASSIGNMENT_MODE: z.enum(['external_panel', 'in_app']).default('external_panel'),
+    // A driver can't tap "Start Navigation" on a reserved Rental/Trip
+    // booking (assignmentGateService's reserved→on_trip trigger) until
+    // within this many minutes of its scheduled_at — long enough to reach a
+    // pickup that may be far away, short enough that "reserved" can't be
+    // prematurely turned into "on_trip" for something still a day out.
+    RESERVED_START_LEAD_MINUTES: int(60),
 
     // Platform commission on each completed ride's fare (percent).
     COMMISSION_PCT: int(20).pipe(z.number().int().min(0).max(90)),

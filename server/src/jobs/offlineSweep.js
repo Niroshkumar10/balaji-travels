@@ -5,6 +5,12 @@
  * abrupt disconnects (app killed, network dropped) that never sent an explicit
  * driver:offline. Deliberately leaves 'on_trip' drivers alone: a driver mid-ride
  * with no signal inside a building is still on that ride.
+ *
+ * A 'reserved' driver (holding an accepted future Rental/Trip that hasn't
+ * started) IS swept offline by a stale heartbeat, same as 'available' —
+ * intentional, not a gap: the reservation itself lives in rt_rides, not in
+ * this column, so it survives regardless and is correctly restored by
+ * driverRepo.recomputeAvailability() the next time they go online.
  */
 
 const env = require('../config/env');

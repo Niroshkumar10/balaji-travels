@@ -38,7 +38,8 @@ const driverLocationRepo = require('../repositories/driverLocationRepo');
 const customerRepo = require('../repositories/customerRepo');
 const userRepo = require('../repositories/userRepo');
 const { serviceFor, driverServes } = require('../utils/serviceType');
-const { windowForRideRow, windowsOverlap } = require('../utils/rideWindow');
+const { windowForRideRow, windowsOverlap, parseDbTimestampUtc } = require('../utils/rideWindow');
+const assignmentGateService = require('./assignmentGateService');
 
 const OFFER_TIMEOUT_MS = env.DISPATCH_OFFER_TIMEOUT_MS;
 const NO_DRIVER_TIMEOUT_MS = env.DISPATCH_NO_DRIVER_TIMEOUT_MS;
@@ -76,6 +77,13 @@ function queueSnapshot(s) {
   return lines;
 }
 
+/** True if `driverId` holds ANY ride (live or reserved) whose window overlaps `ride`'s. */
+async function hasHoldConflict(driverId, ride, excludeRideId = ride.id) {
+  const held = await rideRepo.listHeldForDriver(driverId, { excludeRideId });
+  const rideWin = windowForRideRow(ride);
+  return held.some((h) => windowsOverlap(windowForRideRow(h), rideWin));
+}
+
 async function buildQueue(ride, excludeIds = new Set(), radiusKm = RADIUS_KM) {
   const rows = await driverLocationRepo.nearby({
     lat: Number(ride.pickup_lat),
@@ -85,8 +93,26 @@ async function buildQueue(ride, excludeIds = new Set(), radiusKm = RADIUS_KM) {
     serviceType: serviceFor(ride.ride_type),
     limit: MAX_DRIVERS * 2,
   });
-  const queue = rows
-    .filter((r) => !excludeIds.has(r.driver_id))
+  const candidates = rows.filter((r) => !excludeIds.has(r.driver_id));
+
+  // 'reserved' drivers are eligible for Local — but only if this ride's
+  // window doesn't overlap whatever they're reserved for. nearby() has no
+  // ride context to check this itself (see its doc comment), so it's done
+  // here where the actual ride being dispatched is known.
+  const reserved = candidates.filter((r) => r.availability === 'reserved');
+  const conflicting = new Set();
+  for (const r of reserved) {
+    if (await hasHoldConflict(r.driver_id, ride)) conflicting.add(r.driver_id);
+  }
+  if (conflicting.size) {
+    L.event('⏭️', 'reserved driver(s) dropped — window conflicts with their existing hold', {
+      rideId: ride.id,
+      driverIds: [...conflicting],
+    });
+  }
+
+  const queue = candidates
+    .filter((r) => !conflicting.has(r.driver_id))
     .slice(0, MAX_DRIVERS)
     .map((r) => ({
       driverId: r.driver_id,
@@ -337,17 +363,25 @@ async function offerNext(rideId) {
   // (Local auto-dispatch — unchanged, real-time only) but NOT automatically
   // for mode 'admin' (Rental/Outstation/Round Trip, admin-picked): a driver
   // mid-trip right now can still be assigned to something scheduled hours
-  // from now. Only a genuine overlap between that current trip's time
-  // window and this ride's own window disqualifies them — see
-  // driverLocationRepo.candidatesForAdmin()'s doc comment, which applies
-  // the exact same rule when building the candidate list the admin picked
-  // from; this is that same check re-verified at actual send time.
-  let onTripConflict = false;
-  if (drv && drv.availability === 'on_trip' && s.mode === 'admin') {
-    const activeRide = await rideRepo.findActiveForDriver(cand.driverId);
-    onTripConflict = activeRide ? windowsOverlap(windowForRideRow(activeRide), windowForRideRow(s.ride)) : false;
+  // from now. `availability === 'reserved'` (holding an accepted future
+  // non-local booking) is NOT a disqualifier for EITHER mode — a reserved
+  // driver can still take a Local, and can still be picked for a further
+  // non-overlapping admin assignment. Both cases require only a genuine
+  // window overlap with something the driver already HOLDS (not just their
+  // one live ride — see rideRepo.listHeldForDriver()) to actually
+  // disqualify — see driverLocationRepo.candidatesForAdmin()'s doc comment,
+  // which applies the exact same rule when building the candidate list;
+  // this is that same check re-verified at actual send time.
+  let holdConflict = false;
+  const needsHoldCheck = drv && (drv.availability === 'reserved' || (drv.availability === 'on_trip' && s.mode === 'admin'));
+  if (needsHoldCheck) {
+    holdConflict = await hasHoldConflict(cand.driverId, s.ride);
   }
-  const availabilityOk = drv && (drv.availability === 'available' || (drv.availability === 'on_trip' && s.mode === 'admin' && !onTripConflict));
+  const availabilityOk =
+    drv &&
+    (drv.availability === 'available' ||
+      (drv.availability === 'reserved' && !holdConflict) ||
+      (drv.availability === 'on_trip' && s.mode === 'admin' && !holdConflict));
 
   if (!drv || drv.is_online !== 1 || !availabilityOk || drv.kyc_status !== 'approved' || !driverServes(drv, s.ride.ride_type)) {
     // Named single reason, on top of the raw fields already logged — a
@@ -360,7 +394,7 @@ async function offerNext(rideId) {
       : drv.is_online !== 1
         ? 'offline'
         : !availabilityOk
-          ? (onTripConflict ? 'on_trip_time_conflict' : `unavailable(${drv.availability})`)
+          ? (holdConflict ? 'reserved_time_conflict' : `unavailable(${drv.availability})`)
           : drv.kyc_status !== 'approved'
             ? 'kyc_not_approved'
             : 'service_type_not_served';
@@ -395,6 +429,11 @@ async function offerNext(rideId) {
     estFare: s.ride.est_fare,
     vehicleCategory: s.ride.vehicle_category,
     expiresInSec: Math.round(OFFER_TIMEOUT_MS / 1000),
+    // Additive — lets a client tell a Local offer apart from an admin-mode
+    // Rental/Trip one without changing the accept/decline mechanics here.
+    rideType: s.ride.ride_type,
+    mode: s.mode,
+    scheduledAt: s.ride.scheduled_at ? parseDbTimestampUtc(s.ride.scheduled_at).toISOString() : null,
   });
   const liveSockets = delivery.delivered;
 
@@ -499,25 +538,45 @@ async function handleOfferResponse(rideId, driverId, accept) {
   if (!release) return { ok: false, reason: 'taken' };
 
   try {
-    const result = await db.withTransaction(async (tx) => {
-      const drv = await driverRepo.findById(driverId, tx);
-      const vehId = drv?.current_vehicle_id ?? null;
+    let result;
+    try {
+      result = await db.withTransaction(async (tx) => {
+        const drv = await driverRepo.findById(driverId, tx);
+        const vehId = drv?.current_vehicle_id ?? null;
 
-      const cand = s.queue[s.idx];
-      const won = await rideRepo.atomicAssign(
-        { rideId, driverId, vehicleId: vehId, lat: cand?.lat, lng: cand?.lng },
-        tx,
-      );
-      if (!won) return { ok: false, reason: 'taken' };
+        const cand = s.queue[s.idx];
+        const won = await rideRepo.atomicAssign(
+          { rideId, driverId, vehicleId: vehId, lat: cand?.lat, lng: cand?.lng },
+          tx,
+        );
+        if (!won) return { ok: false, reason: 'taken' };
 
-      await rideOfferRepo.markResponded(rideId, driverId, 'accepted', tx);
-      await rideOfferRepo.supersedeOthers(rideId, driverId, tx);
+        // Non-local (admin-mode) accept: this offer/accept step IS the
+        // driver's explicit confirmation — record it through the same gate
+        // columns/derivation everything else uses (assignmentGateService's
+        // 'in_app' bridge), inside this same transaction. A hold conflict
+        // here (rare — offerNext already checked this before sending the
+        // offer; only a genuine last-moment race gets here) throws and
+        // rolls back atomicAssign's claim too, caught below.
+        if (serviceFor(s.ride.ride_type) !== 'local') {
+          await assignmentGateService.markAcceptedFromOffer(rideId, driverId, tx);
+        }
 
-      const otp = ride4();
-      await rideRepo.setOtp(rideId, otp, tx);
-      const ride = await rideRepo.findById(rideId, tx);
-      return { ok: true, ride, otp, driver: drv, vehicleId: vehId };
-    });
+        await rideOfferRepo.markResponded(rideId, driverId, 'accepted', tx);
+        await rideOfferRepo.supersedeOthers(rideId, driverId, tx);
+
+        const otp = ride4();
+        await rideRepo.setOtp(rideId, otp, tx);
+        const ride = await rideRepo.findById(rideId, tx);
+        return { ok: true, ride, otp, driver: drv, vehicleId: vehId };
+      });
+    } catch (err) {
+      if (err.code === 'RESERVATION_TIME_CONFLICT') {
+        L.event('⏭️', 'accept rolled back — booking now overlaps something the driver holds', { rideId, driverId });
+        return { ok: false, reason: 'time_conflict' };
+      }
+      throw err;
+    }
 
     if (!result.ok) return result;
 
@@ -560,13 +619,14 @@ async function handleOfferResponse(rideId, driverId, accept) {
     });
     notifyService.notify(s.customerUserId, {
       type: 'driver_assigned',
-      title: 'Driver on the way',
+      title: 'Driver assigned',
       body: `${drvUser?.name ?? 'Your driver'} · ${vehicle?.plate_no ?? ''}`.trim(),
       data: { rideId: String(rideId) },
     });
 
     // winning driver
     const customerUser = await userRepo.findById((await customerRepo.findById(ride.customer_id)).user_id);
+    const isNonLocal = serviceFor(ride.ride_type) !== 'local';
     realtime.toUser(result.driver.user_id, 'ride:assigned', {
       rideId,
       status: ride.status,
@@ -576,8 +636,20 @@ async function handleOfferResponse(rideId, driverId, accept) {
       distanceM: ride.distance_m,
       estFare: ride.est_fare,
       otp, // shown so the driver knows what to ask for
+      rideType: ride.ride_type,
+      scheduledAt: ride.scheduled_at ? parseDbTimestampUtc(ride.scheduled_at).toISOString() : null,
     });
-    notifyService.notify(result.driver.user_id, {
+    // Non-local: this is a RESERVATION, not a trip starting now — a
+    // distinct, calmer notification type so the driver app doesn't route
+    // straight into the live-trip/navigation screen (see driver_shell.dart's
+    // push-navigation table). Local keeps its existing 'ride_confirmed'.
+    notifyService.notify(result.driver.user_id, isNonLocal ? {
+      type: 'rental_trip_reserved',
+      title: 'Booking reserved',
+      body: `You're reserved for this booking${ride.scheduled_at ? '.' : ' — pickup coming up.'}`,
+      socketEvent: 'ride:assignment_reserved', // see assignmentGateService.announceAssignment()'s matching comment
+      data: { rideId: String(rideId), rideType: ride.ride_type, scheduledAt: ride.scheduled_at ? parseDbTimestampUtc(ride.scheduled_at).toISOString() : '' },
+    } : {
       type: 'ride_confirmed',
       title: 'Ride confirmed',
       body: `Pickup at ${ride.pickup_addr ?? 'the customer’s location'}`,

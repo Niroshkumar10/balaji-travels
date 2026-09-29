@@ -90,7 +90,10 @@ router.post(
 );
 
 router.get('/active', asyncHandler(ctrl.active));
-router.get('/active/all', requireRole('customer'), asyncHandler(ctrl.activeAll));
+// Every concurrent ride the requester holds — customer: active rides across
+// all types; driver: everything held (live + reserved), see
+// rideService.listActiveRides().
+router.get('/active/all', asyncHandler(ctrl.activeAll));
 router.get(
   '/',
   validate({
@@ -111,6 +114,19 @@ router.post(
 );
 
 // ── driver: dispatch response + trip milestones (socket is primary path) ──
+// Explicit accept/decline of an admin-assigned Rental/Trip — distinct from
+// offer-response below (Local's timed offer). See assignmentGateService.js.
+router.post(
+  '/:id/accept-assignment',
+  requireRole('driver'),
+  asyncHandler(ctrl.acceptAssignment),
+);
+router.post(
+  '/:id/decline-assignment',
+  requireRole('driver'),
+  validate({ body: z.object({ reason: z.string().trim().max(255).optional() }) }),
+  asyncHandler(ctrl.declineAssignment),
+);
 router.post(
   '/:id/offer-response',
   requireRole('driver'),

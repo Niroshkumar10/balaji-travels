@@ -43,8 +43,11 @@ const userRepo = require('../repositories/userRepo');
 const notificationRepo = require('../repositories/notificationRepo');
 const rideRepo = require('../repositories/rideRepo');
 const dispatchService = require('../services/dispatchService');
+const assignmentGateService = require('../services/assignmentGateService');
+const paymentService = require('../services/paymentService');
 const geo = require('../services/geoService');
 const { isTerminal } = require('../services/rideStateMachine');
+const { serviceFor } = require('../utils/serviceType');
 
 let timer = null;
 const lastStatus = new Map(); // rideId -> last-seen status string
@@ -53,25 +56,55 @@ const notifiedAssignment = new Set(); // rideIds already sent the assignment not
 async function poll() {
   if (db.MEMORY) return;
   const rows = await db.query(
-    `SELECT r.id, r.status, r.customer_id, r.driver_id, r.otp,
+    `SELECT r.id, r.status, r.customer_id, r.driver_id, r.otp, r.ride_type,
+            r.driver_accepted_at, r.driver_accepted_by, r.scheduled_at,
             r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng, r.distance_m, r.pickup_addr,
             c.user_id AS customer_user_id, d.user_id AS driver_user_id
        FROM rt_rides r
        JOIN rt_customers c ON c.id = r.customer_id
        LEFT JOIN rt_drivers d ON d.id = r.driver_id
-      WHERE (r.booking_source = 'admin_call' OR r.ride_type IN ('outstation', 'round_trip', 'rental'))
-        -- Status-bound, not time-bound: an outstation/rental ride can
-        -- legitimately sit REQUESTED for days waiting on a scheduled pickup
-        -- or admin assignment. A rolling time window (the old
-        -- "updated_at > NOW() - INTERVAL 1 DAY") would silently stop
-        -- watching it before that ever happens. Terminal statuses mirror
-        -- rideStateMachine.js's TERMINAL set exactly.
-        AND r.status NOT IN ('COMPLETED', 'CUSTOMER_CANCELLED', 'DRIVER_CANCELLED', 'SYSTEM_CANCELLED', 'NO_DRIVERS_FOUND', 'PAYMENT_FAILED')`,
+      WHERE (
+          (r.booking_source = 'admin_call' OR r.ride_type IN ('outstation', 'round_trip', 'rental'))
+          -- Status-bound, not time-bound: an outstation/rental ride can
+          -- legitimately sit REQUESTED for days waiting on a scheduled pickup
+          -- or admin assignment. A rolling time window (the old
+          -- "updated_at > NOW() - INTERVAL 1 DAY") would silently stop
+          -- watching it before that ever happens. Terminal statuses mirror
+          -- rideStateMachine.js's TERMINAL set exactly.
+          AND r.status NOT IN ('COMPLETED', 'CUSTOMER_CANCELLED', 'DRIVER_CANCELLED', 'SYSTEM_CANCELLED', 'NO_DRIVERS_FOUND', 'PAYMENT_FAILED')
+        )
+        -- The Admin Panel can also write status='COMPLETED' directly,
+        -- skipping DRIVER_COMPLETED/PAYMENT_PENDING/settlement entirely —
+        -- catch those separately (regardless of booking_source/ride_type,
+        -- any ride can be completed this way) so paymentService.
+        -- backfillExternalCompletion() below gets a chance to credit the
+        -- driver's wallet for it. Driven by "no paid payment row yet", not
+        -- a status-transition edge (which the first branch's exclusion
+        -- would make impossible to ever observe), so it's immune to
+        -- polling-timing races and naturally stops matching once backfilled.
+        OR (
+          r.status = 'COMPLETED' AND r.driver_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM rt_payments p WHERE p.ride_id = r.id AND p.status = 'paid')
+        )`,
   );
 
   const seenIds = new Set();
   for (const row of rows) {
     seenIds.add(row.id);
+
+    if (row.status === 'COMPLETED') {
+      const backfilled = await paymentService.backfillExternalCompletion(row.id).catch((err) => {
+        logger.error({ err: err.message, rideId: row.id }, 'admin booking: backfillExternalCompletion failed');
+        return null;
+      });
+      if (backfilled) {
+        logger.info(
+          { rideId: row.id, driverId: row.driver_id },
+          'admin booking: backfilled payment + earnings for an externally-completed ride',
+        );
+      }
+      continue; // nothing else below applies to an already-completed ride
+    }
 
     // The Admin Panel writes rt_rides directly, skipping dispatchService's
     // accept flow entirely — the ONLY place that normally generates the
@@ -104,10 +137,10 @@ async function poll() {
       logger.info({ rideId: row.id, source: r.source, distanceM: r.distanceM }, 'admin booking: generated missing route');
     }
 
-    // Same customer + driver notification pair a normal dispatch acceptance
-    // sends (see dispatchService.js's handleOfferResponse) — an admin-panel
-    // booking assigns a driver directly, with no offer/accept step of its
-    // own, so this is the only place either side ever hears about it.
+    // LOCAL admin_call bookings: same customer + driver notification pair a
+    // normal dispatch acceptance sends (see dispatchService.js's
+    // handleOfferResponse) — a direct DB write has no offer/accept step of
+    // its own, so this is the only place either side ever hears about it.
     // Deliberately NOT gated by the status-change check below: the Admin
     // Panel routinely inserts a ride already AT 'DRIVER_ASSIGNED' on its very
     // first poll (no earlier REQUESTED state ever observed), which the
@@ -119,33 +152,51 @@ async function poll() {
     // above as fine to lose (a harmless re-announce). A lost notification
     // record is NOT harmless (a duplicate push), so the actual guard is the
     // durable check against rt_notifications itself.
-    if (row.status === 'DRIVER_ASSIGNED' && row.driver_user_id && !notifiedAssignment.has(row.id)) {
-      notifiedAssignment.add(row.id);
-      const already = await notificationRepo.existsForRide(row.customer_user_id, 'booking_accepted', row.id);
-      if (!already) {
-        const driverUser = await userRepo.findById(row.driver_user_id);
-        await notifyService.notify(row.customer_user_id, {
-          type: 'booking_accepted',
-          title: 'Your booking is accepted',
-          body: 'A driver has been assigned to your ride.',
-          data: { rideId: String(row.id) },
-        });
-        notifyService.notify(row.customer_user_id, {
-          type: 'driver_assigned',
-          title: 'Driver on the way',
-          body: `${driverUser?.name ?? 'Your driver'} is on the way`,
-          data: { rideId: String(row.id) },
-        });
-        notifyService.notify(row.driver_user_id, {
-          type: 'ride_assigned',
-          title: 'New ride assigned',
-          body: `Pickup at ${row.pickup_addr ?? 'the customer’s location'}`,
-          data: { rideId: String(row.id) },
-        });
-        logger.info(
-          { rideId: row.id, customerUserId: row.customer_user_id, driverUserId: row.driver_user_id },
-          'admin booking: sent assignment notifications',
-        );
+    //
+    // Non-local (Rental/Outstation/Round Trip): the external panel assigning
+    // a driver is NOT the same as that driver being confirmed — see
+    // assignmentGateService.js. While the gate is still pending, this sends
+    // the calm 'rental_trip_assigned' notification instead of treating the
+    // raw driver_id write as final; once the driver has actually accepted
+    // (via POST /rides/:id/accept-assignment), that endpoint itself already
+    // announced it, so there's nothing further to do here.
+    if (row.status === 'DRIVER_ASSIGNED' && row.driver_user_id) {
+      if (serviceFor(row.ride_type) === 'local') {
+        if (!notifiedAssignment.has(row.id)) {
+          notifiedAssignment.add(row.id);
+          const already = await notificationRepo.existsForRide(row.customer_user_id, 'booking_accepted', row.id);
+          if (!already) {
+            const driverUser = await userRepo.findById(row.driver_user_id);
+            await notifyService.notify(row.customer_user_id, {
+              type: 'booking_accepted',
+              title: 'Your booking is accepted',
+              body: 'A driver has been assigned to your ride.',
+              data: { rideId: String(row.id) },
+            });
+            notifyService.notify(row.customer_user_id, {
+              type: 'driver_assigned',
+              title: 'Driver assigned',
+              body: `${driverUser?.name ?? 'Your driver'} is on the way`,
+              data: { rideId: String(row.id) },
+            });
+            notifyService.notify(row.driver_user_id, {
+              type: 'ride_assigned',
+              title: 'New ride assigned',
+              body: `Pickup at ${row.pickup_addr ?? 'the customer’s location'}`,
+              data: { rideId: String(row.id) },
+            });
+            logger.info(
+              { rideId: row.id, customerUserId: row.customer_user_id, driverUserId: row.driver_user_id },
+              'admin booking: sent assignment notifications',
+            );
+          }
+        }
+      } else if (assignmentGateService.isGatePending(row)) {
+        // announceAssignment() is itself durably idempotent (existsForRide,
+        // scoped by driver userId) — no in-memory fast-path set needed here;
+        // a redundant existsForRide query every tick for a pending ride is
+        // cheap and simpler than keeping a second Set in sync with seenIds.
+        await assignmentGateService.announceAssignment(row);
       }
     }
 

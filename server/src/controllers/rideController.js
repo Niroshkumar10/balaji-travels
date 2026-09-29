@@ -2,6 +2,7 @@
 
 const rideService = require('../services/rideService');
 const dispatchService = require('../services/dispatchService');
+const assignmentGateService = require('../services/assignmentGateService');
 const paymentService = require('../services/paymentService');
 const rentalService = require('../services/rentalService');
 const ApiError = require('../utils/apiError');
@@ -106,6 +107,19 @@ module.exports = {
         waitingMinutes: req.body.waitingMinutes ?? 0,
       }),
     });
+  },
+
+  // driver explicitly confirms/declines an admin-assigned Rental/Trip —
+  // distinct from respondOffer() below, which is Local's timed offer.
+  async acceptAssignment(req, res) {
+    if (req.auth.role !== 'driver') throw ApiError.forbidden();
+    const ride = await assignmentGateService.accept(Number(req.params.id), req.auth.profileId);
+    res.json({ success: true, ride });
+  },
+  async declineAssignment(req, res) {
+    if (req.auth.role !== 'driver') throw ApiError.forbidden();
+    const ride = await assignmentGateService.decline(Number(req.params.id), req.auth.profileId, req.body.reason);
+    res.json({ success: true, ride });
   },
 
   // driver responds to a dispatch offer via REST fallback (socket is primary)

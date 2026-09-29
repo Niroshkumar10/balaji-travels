@@ -4,6 +4,7 @@ const db = require('../infra/db');
 const env = require('../config/env');
 const { boundingBox, haversineMeters } = require('../services/geoService');
 const { windowsOverlap, windowForRideRow } = require('../utils/rideWindow');
+const rideRepo = require('./rideRepo');
 
 const driverLocationRepo = {
   /** Upsert the driver's last-known position (called on every heartbeat/ping). */
@@ -81,8 +82,14 @@ const driverLocationRepo = {
     // vehicle that current_vehicle_id points at, and only when that vehicle is
     // active, not soft-deleted, and actually belongs to this driver. A driver
     // without such a pairing can never be dispatched, so they must not appear.
+    //
+    // 'reserved' drivers ARE included here — a driver holding an accepted
+    // future Rental/Trip can still take a Local ride, provided it doesn't
+    // overlap that reservation. This function has no ride context to check
+    // overlap itself; the caller (dispatchService.buildQueue) does that,
+    // same as it already re-verifies availability at offer time.
     const rows = await ctx.query(
-      `SELECT d.id AS driver_id, d.rating_avg, d.current_vehicle_id,
+      `SELECT d.id AS driver_id, d.rating_avg, d.current_vehicle_id, d.availability,
               v.id AS vehicle_id, v.category AS vehicle_category, v.plate_no,
               dl.lat, dl.lng, dl.bearing, dl.updated_at
          FROM rt_driver_locations dl
@@ -92,7 +99,7 @@ const driverLocationRepo = {
                            AND v.is_active = 1
                            AND v.deleted_at IS NULL
         WHERE d.is_online = 1
-          AND d.availability = 'available'
+          AND d.availability IN ('available','reserved')
           AND d.kyc_status = 'approved'
           AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
           ${boxFilter}
@@ -123,18 +130,19 @@ const driverLocationRepo = {
     const row = await ctx.queryOne(
       `SELECT
          (SELECT COUNT(*) FROM rt_drivers WHERE is_online = 1) AS online,
-         (SELECT COUNT(*) FROM rt_drivers WHERE is_online = 1 AND availability = 'available') AS available,
-         (SELECT COUNT(*) FROM rt_drivers WHERE is_online = 1 AND availability = 'available' AND kyc_status = 'approved') AS kyc_ok,
+         (SELECT COUNT(*) FROM rt_drivers WHERE is_online = 1 AND availability IN ('available','reserved')) AS available,
+         (SELECT COUNT(*) FROM rt_drivers WHERE is_online = 1 AND availability = 'reserved') AS reserved,
+         (SELECT COUNT(*) FROM rt_drivers WHERE is_online = 1 AND availability IN ('available','reserved') AND kyc_status = 'approved') AS kyc_ok,
          (SELECT COUNT(*)
             FROM rt_drivers d JOIN rt_driver_locations dl ON dl.driver_id = d.id
-           WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved') AS has_location,
+           WHERE d.is_online = 1 AND d.availability IN ('available','reserved') AND d.kyc_status = 'approved') AS has_location,
          (SELECT COUNT(*)
             FROM rt_drivers d JOIN rt_driver_locations dl ON dl.driver_id = d.id
-           WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
+           WHERE d.is_online = 1 AND d.availability IN ('available','reserved') AND d.kyc_status = 'approved'
              AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)) AS fresh_location,
          (SELECT COUNT(*)
             FROM rt_drivers d JOIN rt_driver_locations dl ON dl.driver_id = d.id
-           WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
+           WHERE d.is_online = 1 AND d.availability IN ('available','reserved') AND d.kyc_status = 'approved'
              AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
              AND dl.lat BETWEEN :latMin AND :latMax AND dl.lng BETWEEN :lngMin AND :lngMax) AS in_box,
          (SELECT COUNT(*)
@@ -144,7 +152,7 @@ const driverLocationRepo = {
                               AND v.driver_id = d.id
                               AND v.is_active = 1
                               AND v.deleted_at IS NULL
-           WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
+           WHERE d.is_online = 1 AND d.availability IN ('available','reserved') AND d.kyc_status = 'approved'
              AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
              AND dl.lat BETWEEN :latMin AND :latMax AND dl.lng BETWEEN :lngMin AND :lngMax
              AND v.category = :category) AS category_match,
@@ -155,7 +163,7 @@ const driverLocationRepo = {
                               AND v.driver_id = d.id
                               AND v.is_active = 1
                               AND v.deleted_at IS NULL
-           WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
+           WHERE d.is_online = 1 AND d.availability IN ('available','reserved') AND d.kyc_status = 'approved'
              AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
              AND dl.lat BETWEEN :latMin AND :latMax AND dl.lng BETWEEN :lngMin AND :lngMax
              AND v.category = :category
@@ -189,7 +197,7 @@ const driverLocationRepo = {
                                AND v.driver_id = d.id
                                AND v.is_active = 1
                                AND v.deleted_at IS NULL
-        WHERE d.is_online = 1 AND d.availability = 'available' AND d.kyc_status = 'approved'
+        WHERE d.is_online = 1 AND d.availability IN ('available','reserved') AND d.kyc_status = 'approved'
           AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
         ORDER BY d.id
         LIMIT 20`,
@@ -199,6 +207,7 @@ const driverLocationRepo = {
     return {
       online: Number(row?.online ?? 0),
       available: Number(row?.available ?? 0),
+      reserved: Number(row?.reserved ?? 0),
       kycApproved: Number(row?.kyc_ok ?? 0),
       hasLocationRow: Number(row?.has_location ?? 0),
       freshLocation: Number(row?.fresh_location ?? 0),
@@ -233,14 +242,17 @@ const driverLocationRepo = {
    *     Hatchback driver with Rental enabled can take a Rental booked as
    *     Sedan. Category is still returned, for the admin to see, just not
    *     used to exclude anyone.
-   *   - `availability = 'on_trip'` does NOT disqualify a driver outright —
-   *     a driver mid-trip right now can still be a perfectly good pick for
-   *     something scheduled hours from now. Instead, every online driver's
-   *     CURRENT active ride (if any, via rt_rides.active_driver_id) is
-   *     fetched and its time window compared against the ride being
-   *     assigned (`newRideWindow`); only a genuine overlap disqualifies.
-   *     A driver with no active ride, or one that doesn't overlap, is a
-   *     normal candidate — `currentlyOnTrip` just tells the admin which.
+   *   - `availability = 'on_trip'` or `'reserved'` does NOT disqualify a
+   *     driver outright — a driver mid-trip right now, or already holding a
+   *     different future reservation, can still be a perfectly good pick
+   *     for something scheduled at a non-overlapping time. Instead, every
+   *     online driver's held rides (rideRepo.listHeldForDrivers — both a
+   *     current live ride AND any accepted future reservations, see
+   *     migration 0004) are fetched and each one's time window compared
+   *     against the ride being assigned (`newRideWindow`); only a genuine
+   *     overlap with ANY held ride disqualifies. `currentlyOnTrip` /
+   *     `currentlyReserved` just tell the admin which kind of hold (if any)
+   *     a candidate has.
    *
    * `is_online`, KYC-approved, fresh GPS, and serves the requested service
    * type are still hard requirements, same as `nearby()`. No radius limit —
@@ -255,9 +267,7 @@ const driverLocationRepo = {
       `SELECT d.id AS driver_id, d.rating_avg, d.rating_count, d.current_vehicle_id, d.availability,
               u.name, u.mobile,
               v.id AS vehicle_id, v.category AS vehicle_category, v.plate_no, v.model,
-              dl.lat, dl.lng, dl.updated_at,
-              ar.id AS active_ride_id, ar.scheduled_at AS active_scheduled_at,
-              ar.requested_at AS active_requested_at, ar.duration_s AS active_duration_s
+              dl.lat, dl.lng, dl.updated_at
          FROM rt_driver_locations dl
          JOIN rt_drivers d  ON d.id = dl.driver_id
          JOIN rt_users u    ON u.id = d.user_id
@@ -265,28 +275,29 @@ const driverLocationRepo = {
                            AND v.driver_id = d.id
                            AND v.is_active = 1
                            AND v.deleted_at IS NULL
-         LEFT JOIN rt_rides ar ON ar.active_driver_id = d.id
         WHERE d.is_online = 1
           AND d.kyc_status = 'approved'
           AND dl.updated_at >= (NOW() - INTERVAL :staleSeconds SECOND)
           AND FIND_IN_SET(:serviceType, d.service_types) > 0`,
       { staleSeconds, serviceType },
     );
+    if (!rows.length) return [];
+
+    const held = await rideRepo.listHeldForDrivers(rows.map((r) => r.driver_id), ctx);
+    const heldByDriver = new Map();
+    for (const h of held) {
+      if (!heldByDriver.has(h.driver_id)) heldByDriver.set(h.driver_id, []);
+      heldByDriver.get(h.driver_id).push(h);
+    }
 
     return rows
-      .filter((r) => {
-        if (!r.active_ride_id) return true; // nothing active — always a candidate
-        const activeWindow = windowForRideRow({
-          scheduled_at: r.active_scheduled_at,
-          requested_at: r.active_requested_at,
-          duration_s: r.active_duration_s,
-        });
-        return !windowsOverlap(activeWindow, newRideWindow);
-      })
+      .map((r) => ({ ...r, held: heldByDriver.get(r.driver_id) ?? [] }))
+      .filter((r) => !r.held.some((h) => windowsOverlap(windowForRideRow(h), newRideWindow)))
       .map((r) => ({
         ...r,
         distance_m: haversineMeters(lat, lng, Number(r.lat), Number(r.lng)),
-        currently_on_trip: !!r.active_ride_id,
+        currently_on_trip: r.held.some((h) => rideRepo.isLiveHold(h)),
+        currently_reserved: r.held.some((h) => !rideRepo.isLiveHold(h) && h.driver_accepted_at != null),
       }))
       .sort((a, b) => a.distance_m - b.distance_m)
       .slice(0, limit);

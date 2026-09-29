@@ -9,6 +9,7 @@ const fareService = require('./fareService');
 const promoService = require('./promoService');
 const dispatchService = require('./dispatchService');
 const adminAssignmentService = require('./adminAssignmentService');
+const assignmentGateService = require('./assignmentGateService');
 const { serviceFor } = require('../utils/serviceType');
 const paymentService = require('./paymentService');
 const notifyService = require('./notifyService');
@@ -20,7 +21,7 @@ const driverRepo = require('../repositories/driverRepo');
 const vehicleRepo = require('../repositories/vehicleRepo');
 const userRepo = require('../repositories/userRepo');
 const driverLocationRepo = require('../repositories/driverLocationRepo');
-const { parseDbTimestampUtc, rideWindow, windowsOverlap } = require('../utils/rideWindow');
+const { parseDbTimestampUtc, rideWindow, windowsOverlap, windowForRideRow } = require('../utils/rideWindow');
 
 const ALL_CATEGORIES = ['bike', 'auto', 'hatchback', 'sedan', 'suv'];
 const maskPhone = (m) => (m ? `${m.slice(0, 2)}xxxxx${m.slice(-3)}` : null);
@@ -101,7 +102,15 @@ async function enrich(ride) {
       /* leave as-is */
     }
   }
-  if (ride.driver_id) {
+
+  // Case 1/2/3 (Local always 'not_required'): while a non-local assignment
+  // is still pending the driver's explicit accept, driver/vehicle/location
+  // are deliberately withheld below — a rider must not be able to see who's
+  // been proposed before that driver has actually confirmed.
+  const gatePending = assignmentGateService.isGatePending(ride);
+  out.driverAcceptance = serviceFor(ride.ride_type) === 'local' ? 'not_required' : gatePending ? 'pending' : 'accepted';
+
+  if (ride.driver_id && !gatePending) {
     const [driver, vehicle, loc] = await Promise.all([
       driverRepo.findById(ride.driver_id),
       ride.vehicle_id ? vehicleRepo.findById(ride.vehicle_id) : null,
@@ -331,15 +340,21 @@ const rideService = {
   },
 
   /**
-   * Every concurrent active ride for a customer (one per service type is now
-   * possible — see assertNoBookingConflict()), for the home screen's list of
-   * "ride in progress" cards. A driver can only ever have one active ride at
-   * a time, so this is customer-only; getActiveRide() above is unchanged and
-   * still used everywhere a single ride is expected (driver, resume-banner).
+   * Every concurrent ride the requester holds. Customer: one per service
+   * type is now possible (see assertNoBookingConflict()) — the home
+   * screen's list of "ride in progress" cards. Driver: everything they
+   * hold (their one live ride, if any, plus any accepted future Rental/
+   * Trip reservations — see rideRepo.findAllHeldForDriver()), for the
+   * "Rental and Trip" screen. getActiveRide() above is unchanged and still
+   * used everywhere a SINGLE ride is expected (the resume banner, and a
+   * driver's own live-trip screen, which only ever cares about the one
+   * ride actually occupying active_driver_id).
    */
   async listActiveRides(requester) {
-    if (requester.role !== 'customer') throw ApiError.forbidden('Customer only', 'CUSTOMER_ONLY');
-    const rides = await rideRepo.findAllActiveForCustomer(requester.profileId);
+    const rides =
+      requester.role === 'customer'
+        ? await rideRepo.findAllActiveForCustomer(requester.profileId)
+        : await rideRepo.findAllHeldForDriver(requester.profileId);
     return Promise.all(rides.map(enrich));
   },
 
@@ -409,13 +424,15 @@ const rideService = {
   },
 
   // ── driver intents ──────────────────────────────────────────────────────────
-  async _driverEvent(rideId, driverProfileId, event, { meta, extra } = {}) {
+  async _driverEvent(rideId, driverProfileId, event, { meta, extra, afterTx } = {}) {
     const ride = await rideRepo.findById(rideId);
     if (!ride) throw ApiError.notFound('Ride not found');
     if (ride.driver_id !== driverProfileId) throw ApiError.forbidden('Not your ride', 'RIDE_FORBIDDEN');
-    const updated = await db.withTransaction((tx) =>
-      rideRepo.transition({ rideId, event, actorRole: 'driver', actorId: driverProfileId, meta }, tx),
-    );
+    const updated = await db.withTransaction(async (tx) => {
+      const r = await rideRepo.transition({ rideId, event, actorRole: 'driver', actorId: driverProfileId, meta }, tx);
+      if (afterTx) await afterTx(tx, r);
+      return r;
+    });
     const customer = await customerRepo.findById(ride.customer_id);
     realtime.toUser(customer.user_id, 'ride:status', {
       rideId,
@@ -425,12 +442,41 @@ const rideService = {
     return { ride: updated, customerUserId: customer.user_id };
   },
 
+  /**
+   * The reserved→on_trip trigger (design decision: driver-initiated, not a
+   * background job — see migration 0004's doc comment). Reuses the exact
+   * transition Local already uses for its "Start navigation to pickup"
+   * button; the only additions for a non-local ride are: the assignment
+   * gate must already be accepted, it must be within the configured lead
+   * window of scheduled_at, and driverRepo.recomputeAvailability() runs in
+   * the SAME transaction as the status write — that's what makes
+   * DRIVER_ARRIVING correctly claim the exclusive active_driver_id slot
+   * (see migration 0004) and flips availability reserved→on_trip atomically
+   * with it.
+   */
   async driverEnroute(rideId, driverProfileId) {
+    const current = await rideRepo.findById(rideId);
+    if (!current) throw ApiError.notFound('Ride not found');
+    if (current.driver_id !== driverProfileId) throw ApiError.forbidden('Not your ride', 'RIDE_FORBIDDEN');
+    if (serviceFor(current.ride_type) !== 'local') {
+      if (assignmentGateService.isGatePending(current)) {
+        throw ApiError.conflict('Accept this booking before starting', 'ASSIGNMENT_NOT_ACCEPTED');
+      }
+      const earliestMs = windowForRideRow(current).start - env.RESERVED_START_LEAD_MINUTES * 60 * 1000;
+      if (Date.now() < earliestMs) {
+        throw ApiError.conflict('Too early to start this booking', 'START_TOO_EARLY', {
+          earliestAt: new Date(earliestMs).toISOString(),
+        });
+      }
+    }
     // "en_route" status-location: last-known position, never invented — see
     // driverLocationRepo.getRecentMeta. A stale/missing GPS never blocks the
     // transition itself, it just means this one gets no location stamped.
     const meta = await driverLocationRepo.getRecentMeta(driverProfileId);
-    const { ride } = await this._driverEvent(rideId, driverProfileId, 'driver_enroute', { meta });
+    const { ride } = await this._driverEvent(rideId, driverProfileId, 'driver_enroute', {
+      meta,
+      afterTx: (tx) => driverRepo.recomputeAvailability(driverProfileId, tx),
+    });
     return enrich(ride);
   },
 

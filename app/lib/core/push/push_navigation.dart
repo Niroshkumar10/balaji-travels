@@ -22,12 +22,24 @@ String? routeForNotification(Map<String, dynamic> data, AppRole? role) {
     case 'ride_offer':
       return rideId == null ? null : '/d/offer/$rideId';
 
-    // Sent once a driver is confirmed on the ride — 'ride_assigned' for an
-    // admin-panel booking (no offer/accept step of its own), 'ride_confirmed'
-    // right after the driver accepts a normal dispatch offer.
+    // Sent once a driver is confirmed on a LOCAL ride — 'ride_assigned' for
+    // an admin-panel local booking (no offer/accept step of its own),
+    // 'ride_confirmed' right after the driver accepts a normal dispatch
+    // offer. Never sent for a non-local (Rental/Trip) ride pre-acceptance —
+    // see assignmentGateService.js server-side; those use
+    // rental_trip_assigned/reserved below instead, so the driver never jumps
+    // straight into the live-trip screen for a booking that isn't starting
+    // now.
     case 'ride_assigned':
     case 'ride_confirmed':
       return rideId == null ? null : '/d/ride/$rideId';
+
+    // Driver-only — a future Rental/Trip was assigned (still needs the
+    // driver's explicit accept) or just got confirmed/reserved. Both open
+    // the "Rental and Trip" screen to review, not the live-trip screen.
+    case 'rental_trip_assigned':
+    case 'rental_trip_reserved':
+      return '/d/rental-trip';
 
     // Customer-only — driver_assigned/no_drivers/driver_arrived/ride_started/
     // booking_accepted are only ever notified to the customer (see
@@ -40,6 +52,13 @@ String? routeForNotification(Map<String, dynamic> data, AppRole? role) {
     case 'driver_arrived':
     case 'ride_started':
       return rideId == null ? null : '/c/ride/$rideId';
+
+    // Customer-only — an admin-assigned driver declined before accepting; a
+    // new one is being lined up. The customer's Upcoming Trips screen
+    // already reflects the reverted status (Case 1) via the same
+    // activeRidesProvider the home screen uses.
+    case 'assignment_pending':
+      return '/c/upcoming';
 
     case 'payment_pending':
       return rideId == null ? null : '/c/pay/$rideId';

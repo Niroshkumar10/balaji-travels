@@ -108,6 +108,14 @@ class _DriverShellState extends ConsumerState<DriverShell> with WidgetsBindingOb
   }
 
   Widget _shell(BuildContext context) {
+    // next.ride comes from GET /rides/active, which now only ever returns
+    // the ONE ride currently occupying the driver's exclusive
+    // active_driver_id slot (see migration 0004 server-side) — a reserved,
+    // not-yet-started Rental/Trip booking can never populate it, so this
+    // auto-push can never fire for one. That booking is reviewed from the
+    // "Rental and Trip" drawer screen instead, and only reaches this push
+    // once the driver taps Start Navigation there (which is what makes it
+    // occupy the slot in the first place).
     ref.listen(driverControllerProvider, (prev, next) {
       if (next.ride != null &&
           next.ride!.status.isActive &&
