@@ -4,14 +4,22 @@ const db = require('../infra/db');
 const { rideRef } = require('../utils/ids');
 const sm = require('../services/rideStateMachine');
 const ApiError = require('../utils/apiError');
+const { windowsOverlap, windowForRideRow } = require('../utils/rideWindow');
 
 const RIDE_COLS = `id, ride_ref, customer_id, driver_id, vehicle_id, status, ride_type,
   vehicle_category, pickup_lat, pickup_lng, pickup_addr, drop_lat, drop_lng, drop_addr,
   route_polyline, distance_m, duration_s, est_fare, final_fare, fare_breakdown,
   fare_config_id, promo_id, discount_amount, payment_id, payment_method, otp,
   waiting_minutes, cancelled_by, cancel_reason, scheduled_at, rental_package_hours,
-  requested_at, assigned_at, driver_arrived_at, started_at, completed_at, cancelled_at,
+  requested_at, assigned_at, driver_accepted_at, driver_accepted_by,
+  driver_arrived_at, started_at, completed_at, cancelled_at,
   created_at, updated_at`;
+
+// Statuses where a driver "holds" a ride — either actually driving it, or
+// reserved on an accepted, not-yet-started non-local booking. Reuses
+// rideStateMachine's DRIVER_ACTIVE (same set) as the single source of
+// truth rather than duplicating the literal list here.
+const DRIVER_HELD_STATUSES = [...sm.DRIVER_ACTIVE];
 
 const rideRepo = {
   async create(data, ctx = db) {
@@ -114,13 +122,116 @@ const rideRepo = {
     );
   },
 
+  /**
+   * The ONE ride currently occupying the driver's exclusive active_driver_id
+   * slot — i.e. what they're actually, physically driving right now. A
+   * reserved-but-not-yet-navigating booking never appears here (see
+   * migration 0004); use listHeldForDriver()/findAllHeldForDriver() for the
+   * broader set that also includes reservations.
+   */
   async findActiveForDriver(driverId, ctx = db) {
     return ctx.queryOne(
+      `SELECT ${RIDE_COLS} FROM rt_rides WHERE active_driver_id = :driverId LIMIT 1`,
+      { driverId },
+    );
+  },
+
+  /**
+   * Every ride this driver currently HOLDS — driving now, or reserved on an
+   * accepted future non-local booking. Used for time-window conflict checks
+   * (a driver can't be offered/accept something that overlaps ANY of these),
+   * not just their single live ride. See DRIVER_HELD_STATUSES above.
+   */
+  async listHeldForDriver(driverId, { excludeRideId } = {}, ctx = db) {
+    return ctx.query(
+      `SELECT id, ride_type, status, scheduled_at, requested_at, duration_s, driver_accepted_at
+         FROM rt_rides
+        WHERE driver_id = :driverId
+          AND status IN (${DRIVER_HELD_STATUSES.map((s) => `'${s}'`).join(',')})
+          ${excludeRideId ? 'AND id != :excludeRideId' : ''}`,
+      excludeRideId ? { driverId, excludeRideId } : { driverId },
+    );
+  },
+
+  /** Bulk variant of listHeldForDriver(), grouped by driver_id — for candidatesForAdmin(). */
+  async listHeldForDrivers(driverIds, ctx = db) {
+    if (!driverIds.length) return [];
+    return ctx.query(
+      `SELECT driver_id, id, ride_type, status, scheduled_at, requested_at, duration_s, driver_accepted_at
+         FROM rt_rides
+        WHERE driver_id IN (:driverIds)
+          AND status IN (${DRIVER_HELD_STATUSES.map((s) => `'${s}'`).join(',')})`,
+      { driverIds },
+    );
+  },
+
+  /**
+   * Mirrors migration 0004's active_driver_id CASE exactly — true if this
+   * held-ride row is the one currently occupying the driver's exclusive
+   * slot (actually live right now), false if it's merely a reserved,
+   * not-yet-started hold. Kept here (not in rideWindow.js) since it's a
+   * status predicate, not a time-window one.
+   */
+  isLiveHold(row) {
+    if (['DRIVER_ARRIVING', 'DRIVER_ARRIVED', 'RIDE_STARTED', 'RIDE_IN_PROGRESS', 'DRIVER_COMPLETED', 'PAYMENT_PENDING'].includes(row.status)) return true;
+    return row.status === 'DRIVER_ASSIGNED' && row.ride_type === 'local';
+  },
+
+  /**
+   * Every ride a driver holds (see above), full rows — for the driver's
+   * "Rental and Trip" screen (rideService.listActiveRides() driver branch).
+   */
+  async findAllHeldForDriver(driverId, ctx = db) {
+    return ctx.query(
       `SELECT ${RIDE_COLS} FROM rt_rides
         WHERE driver_id = :driverId
-          AND status IN ('DRIVER_ASSIGNED','DRIVER_ARRIVING','DRIVER_ARRIVED','RIDE_STARTED','RIDE_IN_PROGRESS','DRIVER_COMPLETED','PAYMENT_PENDING')
-        ORDER BY id DESC LIMIT 1`,
+          AND status IN (${DRIVER_HELD_STATUSES.map((s) => `'${s}'`).join(',')})
+        ORDER BY COALESCE(scheduled_at, requested_at) ASC`,
       { driverId },
+    );
+  },
+
+  /**
+   * Throws BOOKING_TIME_CONFLICT-style if `window` overlaps anything this
+   * driver already holds (excludeRideId lets a ride check against its OWN
+   * prior hold safely, e.g. re-accepting). Reuses utils/rideWindow.js's
+   * overlap math — the same logic already used for the customer-side
+   * booking conflict check and the admin-candidate time filter.
+   */
+  async assertNoHoldConflict({ driverId, window, excludeRideId }, ctx = db) {
+    const held = await this.listHeldForDriver(driverId, { excludeRideId }, ctx);
+    const conflict = held.find((r) => windowsOverlap(windowForRideRow(r), window));
+    if (conflict) {
+      throw ApiError.conflict(
+        'This booking overlaps another ride this driver already holds',
+        'RESERVATION_TIME_CONFLICT',
+        { rideId: conflict.id },
+      );
+    }
+  },
+
+  /** Records the driver's explicit acceptance of an admin-assigned booking. */
+  async markDriverAccepted(rideId, driverId, ctx = db) {
+    await ctx.query(
+      `UPDATE rt_rides SET driver_accepted_at = NOW(), driver_accepted_by = :driverId
+        WHERE id = :rideId AND driver_id = :driverId`,
+      { rideId, driverId },
+    );
+  },
+
+  /**
+   * Undoes an admin assignment (driver declined, or the accept gate needs
+   * to hand the ride back). Mirrors atomicAssign()'s own rollback SQL, plus
+   * clears the acceptance columns and any OTP already backfilled for the
+   * declining driver — the next driver assigned needs a fresh one.
+   */
+  async clearAssignment(rideId, ctx = db) {
+    await ctx.query(
+      `UPDATE rt_rides
+          SET driver_id = NULL, vehicle_id = NULL, assigned_at = NULL,
+              driver_accepted_at = NULL, driver_accepted_by = NULL, otp = NULL
+        WHERE id = :rideId`,
+      { rideId },
     );
   },
 
@@ -148,18 +259,34 @@ const rideRepo = {
    * @returns {Promise<boolean>} true if THIS caller won.
    */
   async atomicAssign({ rideId, driverId, vehicleId, lat, lng }, ctx = db) {
-    const rideUpd = await ctx.query(
-      `UPDATE rt_rides
-          SET driver_id = :driverId, vehicle_id = :vehicleId,
-              status = 'DRIVER_ASSIGNED', assigned_at = NOW()
-        WHERE id = :rideId AND status = 'SEARCHING_DRIVER' AND driver_id IS NULL`,
-      { rideId, driverId, vehicleId: vehicleId ?? null },
-    );
+    let rideUpd;
+    try {
+      rideUpd = await ctx.query(
+        `UPDATE rt_rides
+            SET driver_id = :driverId, vehicle_id = :vehicleId,
+                status = 'DRIVER_ASSIGNED', assigned_at = NOW()
+          WHERE id = :rideId AND status = 'SEARCHING_DRIVER' AND driver_id IS NULL`,
+        { rideId, driverId, vehicleId: vehicleId ?? null },
+      );
+    } catch (err) {
+      // Local-only: the driver is mid-claim on a DIFFERENT ride right now
+      // (active_driver_id's unique slot is taken) — a genuine lost race,
+      // not an error. See migration 0004's redefinition of active_driver_id.
+      if (err.code === 'ER_DUP_ENTRY') return false;
+      throw err;
+    }
     if (rideUpd.affectedRows === 0) return false;
 
+    // 'reserved' is claimable here too — a driver already reserved on a
+    // future non-local booking can still accept a Local (or a further
+    // non-overlapping admin pick; the caller re-verifies non-overlap via
+    // assertNoHoldConflict before ever reaching this point for that case).
+    // This briefly sets 'on_trip' unconditionally; the caller corrects it
+    // to 'reserved' via driverRepo.recomputeAvailability() in the same
+    // transaction when the ride being claimed isn't actually live yet.
     const drvUpd = await ctx.query(
       `UPDATE rt_drivers SET availability = 'on_trip'
-        WHERE id = :driverId AND availability = 'available'`,
+        WHERE id = :driverId AND availability IN ('available','reserved')`,
       { driverId },
     );
     if (drvUpd.affectedRows === 0) {

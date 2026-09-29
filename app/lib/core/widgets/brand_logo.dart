@@ -14,6 +14,7 @@ class BrandLogo extends StatelessWidget {
     this.stacked = false,
     this.compact = false,
     this.light = false,
+    this.useImage = false,
   });
 
   /// Size of the taxi badge.
@@ -32,17 +33,25 @@ class BrandLogo extends StatelessWidget {
   /// Use white text for the wordmark (dark backgrounds).
   final bool light;
 
+  /// Show the real temple emblem (the app icon artwork) instead of the
+  /// generic taxi glyph — used on the role picker's hero logo where there's
+  /// room for the actual mark. Other call sites (login, OTP, home top bar)
+  /// keep the compact taxi badge unchanged.
+  final bool useImage;
+
   @override
   Widget build(BuildContext context) {
-    final badge = Container(
-      width: iconSize,
-      height: iconSize,
-      decoration: BoxDecoration(
-        color: AppColors.primary,
-        borderRadius: BorderRadius.circular(iconSize * 0.3),
-      ),
-      child: Icon(Icons.local_taxi_rounded, color: Colors.white, size: iconSize * 0.6),
-    );
+    final badge = useImage
+        ? Image.asset('assets/icon/app_icon.png', width: iconSize, height: iconSize, fit: BoxFit.contain)
+        : Container(
+            width: iconSize,
+            height: iconSize,
+            decoration: BoxDecoration(
+              color: AppColors.primary,
+              borderRadius: BorderRadius.circular(iconSize * 0.3),
+            ),
+            child: Icon(Icons.local_taxi_rounded, color: Colors.white, size: iconSize * 0.6),
+          );
     if (compact) return badge;
 
     final travelsColor = light ? Colors.white70 : AppColors.textPrimary;

@@ -55,10 +55,23 @@ enum RideStatus {
 
   bool get isActive => !isTerminal && this != RideStatus.paymentFailed;
 
+  /// Once a driver is genuinely on the way (or later) — used to decide
+  /// whether it's still meaningful to show driver/vehicle details at all.
+  bool get isPastAssignment => const {
+        RideStatus.driverAssigned,
+        RideStatus.driverArriving,
+        RideStatus.driverArrived,
+        RideStatus.rideStarted,
+        RideStatus.rideInProgress,
+        RideStatus.driverCompleted,
+        RideStatus.paymentPending,
+        RideStatus.completed,
+      }.contains(this);
+
   String get label => switch (this) {
         RideStatus.requested || RideStatus.searchingDriver => 'Finding a driver',
         RideStatus.pendingAdminAssignment => 'Driver will be assigned shortly',
-        RideStatus.driverAssigned || RideStatus.driverArriving => 'Driver on the way',
+        RideStatus.driverAssigned || RideStatus.driverArriving => 'Driver assigned',
         RideStatus.driverArrived => 'Driver has arrived',
         RideStatus.rideStarted || RideStatus.rideInProgress => 'On the way to destination',
         RideStatus.driverCompleted || RideStatus.paymentPending => 'Payment',
@@ -72,6 +85,14 @@ enum RideStatus {
         RideStatus.unknown => '—',
       };
 }
+
+/// The single predicate both the rider's "Upcoming Trips" cards (Case 1-3,
+/// see the backend's assignmentGateService.js) and the driver's "Reserved"
+/// pill are derived from — computed on the model so neither surface can
+/// drift from the other's logic. Local rides never sit in
+/// [awaitingDriverConfirmation] or [reserved] — they skip straight from
+/// [notAssigned] to [live] (driverAcceptance is always 'not_required').
+enum RideAssignmentStage { notAssigned, awaitingDriverConfirmation, reserved, live, finished }
 
 class RideDriver {
   const RideDriver({required this.id, required this.name, this.rating = 0, this.phoneMasked});
@@ -144,7 +165,10 @@ class Ride {
     this.cancelReason,
     this.requestedAt,
     this.completedAt,
+    this.cancelledAt,
     this.scheduledAt,
+    this.rentalPackageHours,
+    this.driverAcceptance = 'not_required',
   });
 
   final int id;
@@ -175,10 +199,59 @@ class Ride {
   final String? cancelReason;
   final DateTime? requestedAt;
   final DateTime? completedAt;
+  final DateTime? cancelledAt;
   final DateTime? scheduledAt;
+  final int? rentalPackageHours;
+  /// 'not_required' (Local) | 'pending' | 'accepted' — see the backend's
+  /// assignmentGateService.js. Drives [assignmentStage] below.
+  final String driverAcceptance;
 
   double get amountDue => finalFare ?? estFare ?? 0;
   double? get km => distanceM == null ? null : distanceM! / 1000;
+
+  bool get isLocal => rideType == 'local';
+  /// 'rental' | 'trip' | 'local' — outstation and round_trip both read as
+  /// "Trip" everywhere in the UI (matches the backend's serviceFor()).
+  String get serviceKind => switch (rideType) {
+        'local' => 'local',
+        'rental' => 'rental',
+        _ => 'trip',
+      };
+
+  RideAssignmentStage get assignmentStage {
+    if (status.isTerminal || status == RideStatus.paymentFailed) return RideAssignmentStage.finished;
+    if (!status.isPastAssignment) return RideAssignmentStage.notAssigned;
+    if (status == RideStatus.driverAssigned) {
+      if (driverAcceptance == 'pending') return RideAssignmentStage.awaitingDriverConfirmation;
+      if (driverAcceptance == 'accepted') return RideAssignmentStage.reserved;
+    }
+    return RideAssignmentStage.live;
+  }
+
+  /// The rider-facing label for Cases 1-3 (see assignmentGateService.js's
+  /// doc comment); everything else falls back to the existing status label.
+  String get riderStageLabel => switch (assignmentStage) {
+        RideAssignmentStage.notAssigned => 'Still driver is not assigned',
+        RideAssignmentStage.awaitingDriverConfirmation => 'Waiting for driver confirmation',
+        RideAssignmentStage.reserved => 'Driver assigned',
+        RideAssignmentStage.live || RideAssignmentStage.finished => status.label,
+      };
+
+  /// The date/time that actually matters for a HISTORY view (trip lists,
+  /// filtering by day/week) — as opposed to [scheduledAt], which is a
+  /// future target pickup time that can be completely unrelated to when a
+  /// ride was actually driven (a rental's scheduled slot and its real
+  /// completion time can land on different days). A completed ride is
+  /// dated by when it finished, a cancelled one by when it was cancelled;
+  /// anything still active/reserved is dated by when it was requested —
+  /// never by scheduledAt, which would misfile a same-day-completed trip
+  /// under some unrelated future date, or a merely-reserved future booking
+  /// under "today" just because its target slot happens to fall today.
+  DateTime? get historyAt {
+    if (status == RideStatus.completed) return completedAt ?? requestedAt;
+    if (status.isCancelled) return cancelledAt ?? requestedAt;
+    return requestedAt;
+  }
 
   factory Ride.fromJson(Map<String, dynamic> j) {
     final dl = asMap(j['driverLocation']);
@@ -211,7 +284,10 @@ class Ride {
       cancelReason: j['cancel_reason']?.toString(),
       requestedAt: asDate(j['requested_at']),
       completedAt: asDate(j['completed_at']),
+      cancelledAt: asDate(j['cancelled_at']),
       scheduledAt: asDate(j['scheduled_at']),
+      rentalPackageHours: asIntOrNull(j['rental_package_hours']),
+      driverAcceptance: j['driverAcceptance']?.toString() ?? 'not_required',
     );
   }
 }

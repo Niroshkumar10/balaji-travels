@@ -43,6 +43,13 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
     if (err != null && mounted) showError(context, err);
   }
 
+  Future<void> _refresh() async {
+    await Future.wait([
+      ref.read(driverControllerProvider.notifier).loadActive(),
+      ref.refresh(todayEarningsProvider.future),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(driverControllerProvider);
@@ -75,6 +82,11 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
                   const Text('Sri Balaji Travels', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w800, fontSize: 18)),
                   const Spacer(),
                   IconButton(
+                    icon: const Icon(Icons.refresh_rounded),
+                    tooltip: 'Refresh',
+                    onPressed: _refresh,
+                  ),
+                  IconButton(
                     icon: const Icon(Icons.notifications_none_rounded),
                     onPressed: () => context.push('/d/notifications'),
                   ),
@@ -89,7 +101,7 @@ class _DriverHomeTabState extends ConsumerState<DriverHomeTab> {
                 // notify a live one) hasn't shown up on its own yet — pull
                 // down to force the same fetch loadActive() does on cold
                 // start.
-                onRefresh: () => ref.read(driverControllerProvider.notifier).loadActive(),
+                onRefresh: _refresh,
                 child: CustomScrollView(
                   physics: const AlwaysScrollableScrollPhysics(),
                   slivers: [
@@ -488,6 +500,12 @@ class DriverDrawer extends ConsumerWidget {
                       navigator.pop();
                       navigator.push(MaterialPageRoute(builder: (_) => const TripPreferencesScreen()));
                     },
+                  ),
+                  AppTile(
+                    icon: Icons.event_note_rounded,
+                    title: 'Rental and Trip',
+                    iconColor: AppColors.info,
+                    onTap: () => _push(context, '/d/rental-trip'),
                   ),
                   AppTile(
                     icon: Icons.account_balance_rounded,

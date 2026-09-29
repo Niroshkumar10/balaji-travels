@@ -67,6 +67,7 @@ const adminAssignmentService = {
       vehicle: { category: r.vehicle_category, plateNo: r.plate_no, model: r.model },
       distanceM: Math.round(r.distance_m),
       currentlyOnTrip: !!r.currently_on_trip,
+      currentlyReserved: !!r.currently_reserved,
       lastSeenAt: r.updated_at,
     }));
   },

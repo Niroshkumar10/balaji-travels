@@ -15,6 +15,11 @@ class DriverNotificationsScreen extends ConsumerWidget {
         title: 'Notifications',
         fallbackRoute: '/d/dashboard',
         actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Refresh',
+            onPressed: () => ref.invalidate(notificationsProvider),
+          ),
           TextButton(
             onPressed: () async {
               await ref.read(miscRepoProvider).markAllNotificationsRead();

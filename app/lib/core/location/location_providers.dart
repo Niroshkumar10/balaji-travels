@@ -19,10 +19,16 @@ final positionStreamProvider = StreamProvider<Position>((ref) async* {
   final perm = await svc.ensurePermission();
   if (!perm.granted) return;
 
-  // seed with the last-known / current fix so the map isn't empty for the
-  // first few seconds
-  final first = await svc.current();
-  if (first != null) yield first;
+  // Fast path: the OS's cached last-known fix is near-instant (no GPS wait)
+  // — yield it first so the map/pickup point shows immediately instead of
+  // sitting empty while a fresh fix is acquired (LocationService.current()
+  // can take up to ~12s cold). The real fix below supersedes it the moment
+  // it arrives; this is never used as a substitute for one.
+  final last = await svc.lastKnown();
+  if (last != null) yield last;
+
+  final fresh = await svc.current();
+  if (fresh != null) yield fresh;
 
   yield* svc.stream(distanceFilterM: 8);
 });

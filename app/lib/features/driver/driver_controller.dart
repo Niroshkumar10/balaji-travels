@@ -34,6 +34,7 @@ class PendingOffer {
     required this.estFare,
     required this.vehicleCategory,
     required this.expiresInSec,
+    this.rideType = 'local',
   });
 
   final int rideId;
@@ -46,6 +47,7 @@ class PendingOffer {
   final double estFare;
   final String vehicleCategory;
   final int expiresInSec;
+  final String rideType;
 }
 
 /// Rider details for the current trip — only available from the real-time
@@ -344,6 +346,27 @@ class DriverController extends StateNotifier<DriverState> {
   }
 
   Future<String?> startNavigation() => _milestone('ride:enroute', {}, () => _rides.enroute(_rideId!));
+
+  /// The reserved→on_trip trigger for a Rental/Trip booking (see
+  /// rideService.driverEnroute() server-side — same driver_enroute event
+  /// Local's "Start navigation to pickup" already uses). Takes an explicit
+  /// rideId rather than using [_rideId]/[_milestone] because the booking
+  /// isn't state.ride yet at this point — it only becomes the driver's one
+  /// live ride (and therefore state.ride, via loadActive() below) once this
+  /// call succeeds and active_driver_id picks it up server-side.
+  Future<String?> startReservedNavigation(int rideId) async {
+    state = state.copyWith(busy: true);
+    final ack = await _socket.emitAck('ride:enroute', {'rideId': rideId});
+    String? err;
+    if (ack['ok'] != true) {
+      final res = await _rides.enroute(rideId);
+      err = res.when<String?>(ok: (_) => null, err: (e) => e.message);
+    }
+    state = state.copyWith(busy: false);
+    await loadActive();
+    return err;
+  }
+
   Future<String?> markArrived() => _milestone('ride:arrived', {}, () => _rides.arrived(_rideId!));
   Future<String?> startRide(String otp) =>
       _milestone('ride:start', {'otp': otp}, () => _rides.start(_rideId!, otp));
@@ -446,6 +469,15 @@ class DriverController extends StateNotifier<DriverState> {
   void _handleEvent(SocketEvent e, Map<String, dynamic> d) {
     switch (e.name) {
       case 'ride:offer':
+        // The urgent 20/25s accept/decline popup is Local-only — a
+        // Rental/Trip assignment must never appear here (see
+        // assignmentGateService.js server-side; this is defense in depth
+        // in case a future change ever routes one through this event).
+        final rideType = d['rideType']?.toString() ?? 'local';
+        if (rideType != 'local') {
+          _dlog('RIDE OFFER: ignored non-local offer (rideType=$rideType, rideId=${d['rideId']})');
+          break;
+        }
         _dlog('RIDE OFFER: received (rideId=${d['rideId']})');
         state = state.copyWith(
           offer: PendingOffer(
@@ -468,6 +500,7 @@ class DriverController extends StateNotifier<DriverState> {
             estFare: asDouble(d['estFare']),
             vehicleCategory: d['vehicleCategory']?.toString() ?? 'hatchback',
             expiresInSec: asInt(d['expiresInSec'], 20),
+            rideType: rideType,
           ),
         );
         _dlog('state.offer set → rideId=${state.offer?.rideId}');

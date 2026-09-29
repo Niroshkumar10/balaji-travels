@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/audio/request_beep_player.dart';
 import '../../../core/models/models.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/util/formatters.dart';
@@ -29,16 +30,19 @@ class _State extends ConsumerState<RideOfferScreen> {
   Timer? _timer;
   int _left = 20;
   bool _responding = false;
+  final _beep = RequestBeepPlayer();
 
   @override
   void initState() {
     super.initState();
     HapticFeedback.heavyImpact();
+    _beep.start();
     final offer = ref.read(driverControllerProvider).offer;
     _left = offer?.expiresInSec ?? 20;
     _timer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (_left <= 0) {
         t.cancel();
+        _beep.stop();
         if (mounted && context.canPop()) context.pop();
       } else {
         setState(() => _left--);
@@ -49,6 +53,7 @@ class _State extends ConsumerState<RideOfferScreen> {
   @override
   void dispose() {
     _timer?.cancel();
+    _beep.dispose();
     super.dispose();
   }
 
@@ -56,6 +61,7 @@ class _State extends ConsumerState<RideOfferScreen> {
     if (_responding) return;
     setState(() => _responding = true);
     _timer?.cancel();
+    _beep.stop();
     HapticFeedback.mediumImpact();
     final err = await ref
         .read(driverControllerProvider.notifier)

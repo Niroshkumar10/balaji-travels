@@ -22,6 +22,7 @@ import 'features/customer/ride_request/where_to_screen.dart';
 import 'features/customer/saved_places/saved_places_screen.dart';
 import 'features/customer/support/support_screen.dart';
 import 'features/customer/tracking/ride_tracking_screen.dart';
+import 'features/customer/upcoming/upcoming_trips_screen.dart';
 import 'features/customer/wallet/wallet_screen.dart';
 import 'features/driver/driver_shell.dart';
 import 'features/driver/earnings/wallet_screen.dart';
@@ -31,6 +32,8 @@ import 'features/driver/offer/ride_offer_screen.dart';
 import 'features/driver/profile/driver_safety_help_screen.dart';
 import 'features/driver/rating/driver_rating_screen.dart';
 import 'features/driver/ride/driver_ride_screen.dart';
+import 'features/driver/rental_trip/rental_trip_screen.dart';
+import 'features/driver/rental_trip/rental_trip_detail_screen.dart';
 import 'features/auth/role_splash_screen.dart';
 import 'features/driver/onboarding/application_submitted_screen.dart';
 import 'features/driver/onboarding/onboarding_entry.dart';
@@ -140,6 +143,7 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
         builder: (_, s) => RatingScreen(rideId: int.parse(s.pathParameters['id']!)),
       ),
       GoRoute(path: '/c/history', builder: (_, __) => const RideHistoryScreen()),
+      GoRoute(path: '/c/upcoming', builder: (_, __) => const UpcomingTripsScreen()),
       GoRoute(
         path: '/c/ride-detail/:id',
         builder: (_, s) => RideDetailScreen(rideId: int.parse(s.pathParameters['id']!)),
@@ -195,6 +199,11 @@ final Provider<GoRouter> routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/d/ride/:id',
         builder: (_, s) => DriverRideScreen(rideId: int.parse(s.pathParameters['id']!)),
+      ),
+      GoRoute(path: '/d/rental-trip', builder: (_, __) => const RentalTripScreen()),
+      GoRoute(
+        path: '/d/rental-trip/:id',
+        builder: (_, s) => RentalTripDetailScreen(rideId: int.parse(s.pathParameters['id']!)),
       ),
       GoRoute(path: '/d/wallet', builder: (_, __) => const WalletScreen()),
       GoRoute(path: '/d/notifications', builder: (_, __) => const DriverNotificationsScreen()),

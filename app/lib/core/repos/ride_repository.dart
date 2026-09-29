@@ -110,6 +110,13 @@ class RideRepository {
   Future<Result<Ride>> cancel(int id, {String? reason}) async =>
       _ride(await _api.post('/rides/$id/cancel', body: {if (reason != null) 'reason': reason}));
 
+  // ── driver: explicit accept/decline of an admin-assigned Rental/Trip —
+  // distinct from offerResponse() below, which is Local's timed offer. See
+  // the backend's assignmentGateService.js. ──
+  Future<Result<Ride>> acceptAssignment(int id) => _ride0('/rides/$id/accept-assignment');
+  Future<Result<Ride>> declineAssignment(int id, {String? reason}) =>
+      _post('/rides/$id/decline-assignment', {if (reason != null) 'reason': reason});
+
   // ── driver intents (socket is primary; REST fallback) ──
   Future<Result<Ride>> enroute(int id) => _ride0('/rides/$id/enroute');
   Future<Result<Ride>> arrived(int id) => _ride0('/rides/$id/arrived');

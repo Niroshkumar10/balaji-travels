@@ -46,6 +46,8 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
   LatLngPoint? _outstationPickup;
   bool _resolvingOutstation = false;
 
+  bool _topRefreshing = false;
+
   @override
   void initState() {
     super.initState();
@@ -59,6 +61,29 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
     _follow = true;
     _lastProgrammaticMove = DateTime.now();
     _mapKey.currentState?.moveTo(_center, zoom: 16);
+  }
+
+  /// Refresh target for both the pull-to-refresh gesture on the bottom
+  /// panel's lists AND the explicit refresh button in the top bar —
+  /// re-fetches the dynamic home data (active Local ride, and any ride
+  /// that appeared without this screen being told, e.g. an admin-panel
+  /// booking made on the rider's behalf) without touching GPS, the map,
+  /// permissions, or the location stream, all of which are long-lived and
+  /// stay untouched (see positionStreamProvider/MapView — neither is
+  /// recreated by this or any rebuild).
+  Future<void> _refreshHome() => Future.wait([
+        ref.read(activeRidesProvider.notifier).refresh(),
+        ref.read(rideSessionProvider.notifier).loadActive(),
+      ]);
+
+  Future<void> _handleTopRefresh() async {
+    if (_topRefreshing) return;
+    setState(() => _topRefreshing = true);
+    try {
+      await _refreshHome();
+    } finally {
+      if (mounted) setState(() => _topRefreshing = false);
+    }
   }
 
   Future<void> _openSuggestion(String label) async {
@@ -160,7 +185,13 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
         }
         return;
       }
-      final pos = await ref.read(locationServiceProvider).current();
+      // Reuse whatever positionStreamProvider already has — the map above
+      // is already resolving/streaming this same fix — instead of kicking
+      // off a second, fully independent GPS acquisition that would race it
+      // for up to ~12s. Only falls back to a fresh fetch if that provider
+      // genuinely has nothing yet (e.g. permission was only just granted).
+      final streamed = ref.read(positionStreamProvider).valueOrNull;
+      final pos = streamed ?? await ref.read(locationServiceProvider).current();
       if (!mounted) return;
       if (pos == null) {
         showError(context, "Couldn't get your location. Try again.");
@@ -261,28 +292,37 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
         ),
         const SizedBox(height: 6),
         Expanded(
-          child: ListView.separated(
-            padding: const EdgeInsets.only(top: 8, bottom: 12),
-            itemCount: DefaultSuggestions.nearYou.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (_, i) {
-              final label = DefaultSuggestions.nearYou[i];
-              return ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.place_rounded, color: AppColors.inkSoft),
-                title: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
-                onTap: () => _openSuggestion(label),
-                trailing: _favoriting.contains(label)
-                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                    : IconButton(
-                        icon: Icon(
-                          _favorited.contains(label) ? Icons.star_rounded : Icons.star_border_rounded,
-                          color: _favorited.contains(label) ? AppColors.secondary : AppColors.inkSoft,
+          child: RefreshIndicator(
+            onRefresh: _refreshHome,
+            child: ListView.separated(
+              // A short list (fewer items than fit the viewport) has
+              // nothing to overscroll with default physics, which on some
+              // platforms/scroll configurations means the pull-down gesture
+              // never registers at all — this guarantees pull-to-refresh
+              // always works regardless of list length.
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.only(top: 8, bottom: 12),
+              itemCount: DefaultSuggestions.nearYou.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (_, i) {
+                final label = DefaultSuggestions.nearYou[i];
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.place_rounded, color: AppColors.inkSoft),
+                  title: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  onTap: () => _openSuggestion(label),
+                  trailing: _favoriting.contains(label)
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                      : IconButton(
+                          icon: Icon(
+                            _favorited.contains(label) ? Icons.star_rounded : Icons.star_border_rounded,
+                            color: _favorited.contains(label) ? AppColors.secondary : AppColors.inkSoft,
+                          ),
+                          onPressed: () => _favoriteSuggestion(label),
                         ),
-                        onPressed: () => _favoriteSuggestion(label),
-                      ),
-              );
-            },
+                );
+              },
+            ),
           ),
         ),
       ],
@@ -327,20 +367,24 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
         ),
         const SizedBox(height: 6),
         Expanded(
-          child: ListView.separated(
-            padding: const EdgeInsets.only(top: 8, bottom: 12),
-            itemCount: DefaultSuggestions.outstation.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (_, i) {
-              final label = DefaultSuggestions.outstation[i];
-              return ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.landscape_rounded, color: AppColors.inkSoft),
-                title: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
-                trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.inkSoft),
-                onTap: () => _chooseOutstation(label),
-              );
-            },
+          child: RefreshIndicator(
+            onRefresh: _refreshHome,
+            child: ListView.separated(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.only(top: 8, bottom: 12),
+              itemCount: DefaultSuggestions.outstation.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (_, i) {
+                final label = DefaultSuggestions.outstation[i];
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.landscape_rounded, color: AppColors.inkSoft),
+                  title: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.inkSoft),
+                  onTap: () => _chooseOutstation(label),
+                );
+              },
+            ),
           ),
         ),
       ],
@@ -349,7 +393,12 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final activeRides = ref.watch(activeRidesProvider);
+    // Home shows ONLY the active Local ride — Rental/Trip bookings live in
+    // the "Upcoming Trips" drawer screen instead (upcoming_trips_screen.dart),
+    // so they don't crowd the map with several large cards. There's at most
+    // one Local ride active at a time (rideService.assertNoBookingConflict),
+    // so this is always 0 or 1 items.
+    final activeRides = ref.watch(activeRidesProvider).where((r) => r.isLocal).toList();
 
     // A ride the customer never booked themselves in this app session (e.g.
     // an Admin Panel call-in booking made on their behalf) has no moment
@@ -359,9 +408,13 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
     // this, the only way to ever reach /c/ride/:id (and see the OTP) is
     // noticing and tapping the small resume banner above. Mirrors the same
     // fix already in place for the driver's dashboard (driver_shell.dart).
+    // Local-only, same as the banner above — a Rental/Trip assignment
+    // should never auto-jump the rider into live tracking (it's reviewed
+    // from Upcoming Trips instead, and isn't "starting now" anyway).
     ref.listen(rideSessionProvider, (prev, next) {
       if (next.ride != null &&
           next.ride!.status.isActive &&
+          next.ride!.isLocal &&
           prev?.ride?.id != next.ride!.id) {
         context.push('/c/ride/${next.ride!.id}');
       }
@@ -385,7 +438,7 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
       drawer: const _CustomerDrawer(),
       body: Column(
         children: [
-          const _TopBar(),
+          _TopBar(onRefresh: _handleTopRefresh, busy: _topRefreshing),
           Expanded(
             flex: 5,
             child: Stack(
@@ -488,7 +541,9 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
 
 /// Hamburger (left) + centred brand wordmark, above the map.
 class _TopBar extends StatelessWidget {
-  const _TopBar();
+  const _TopBar({required this.onRefresh, required this.busy});
+  final VoidCallback onRefresh;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -511,7 +566,25 @@ class _TopBar extends StatelessWidget {
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.primary),
               ),
             ),
-            const SizedBox(width: 48), // balances the menu icon so the title stays centred
+            // Explicit refresh — same data _refreshHome() re-fetches for
+            // pull-to-refresh below (active Local ride + anything that
+            // appeared without this screen being told, e.g. a booking made
+            // on the rider's behalf). Kept the same 48px width the old
+            // balancing SizedBox used, so the title stays centred.
+            SizedBox(
+              width: 48,
+              child: IconButton(
+                tooltip: 'Refresh',
+                onPressed: busy ? null : onRefresh,
+                icon: busy
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2.2),
+                      )
+                    : const Icon(Icons.refresh_rounded),
+              ),
+            ),
           ],
         ),
       ),
@@ -712,18 +785,35 @@ class _CustomerDrawer extends ConsumerWidget {
               ),
             ),
             const Divider(height: 1),
-            const SizedBox(height: 8),
-            _item(context, Icons.receipt_long_rounded, 'Bookings', '/c/history'),
-            _item(context, Icons.star_rounded, 'Favorites', '/c/saved-places', color: AppColors.secondary),
-            _item(context, Icons.notifications_rounded, 'Notification', '/c/notifications'),
-            _item(context, Icons.account_balance_wallet_rounded, 'Payment Methods', '/c/wallet'),
-            _item(context, Icons.help_outline_rounded, 'Support', '/c/support'),
-            const SizedBox(height: 8),
-            const Divider(height: 1),
-            const SizedBox(height: 8),
-            _item(context, Icons.local_offer_rounded, 'Offers', '/c/offers', color: AppColors.info),
-            _item(context, Icons.person_rounded, 'Profile', '/c/profile'),
-            const Spacer(),
+            // The header above and the Switch-to-Driver/Log-out pair below
+            // stay fixed; only this middle section scrolls. Previously this
+            // whole drawer was one plain, non-scrolling Column with a
+            // Spacer() pushing the footer down — fine as long as everything
+            // fit, but on a shorter screen or with larger system font
+            // scaling the content simply doesn't fit, and a Column can't
+            // scroll to compensate: it overflows (Flutter's render-overflow
+            // warning) and the footer items can end up clipped/unreachable.
+            // Expanded + ListView both bounds this section to the space
+            // actually available AND makes it scrollable when it doesn't
+            // fit, so nothing above or below it ever moves.
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                children: [
+                  _item(context, Icons.receipt_long_rounded, 'Bookings', '/c/history'),
+                  _item(context, Icons.event_available_rounded, 'Upcoming Trips', '/c/upcoming', color: AppColors.info),
+                  _item(context, Icons.star_rounded, 'Favorites', '/c/saved-places', color: AppColors.secondary),
+                  _item(context, Icons.notifications_rounded, 'Notification', '/c/notifications'),
+                  _item(context, Icons.account_balance_wallet_rounded, 'Payment Methods', '/c/wallet'),
+                  _item(context, Icons.help_outline_rounded, 'Support', '/c/support'),
+                  const SizedBox(height: 8),
+                  const Divider(height: 1),
+                  const SizedBox(height: 8),
+                  _item(context, Icons.local_offer_rounded, 'Offers', '/c/offers', color: AppColors.info),
+                  _item(context, Icons.person_rounded, 'Profile', '/c/profile'),
+                ],
+              ),
+            ),
             const Divider(height: 1),
             AppTile(
               icon: Icons.swap_horiz_rounded,

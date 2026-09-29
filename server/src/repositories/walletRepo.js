@@ -26,9 +26,14 @@ const walletRepo = {
   /**
    * Apply a signed amount. MUST be called inside a transaction. Locks the
    * wallet row, computes the new balance, appends the ledger entry.
+   * @param {Date} [occurredAt] When this actually happened — defaults to
+   *   now (the normal live-settlement case). A backfill for a ride
+   *   completed in the past (see paymentService.backfillExternalCompletion)
+   *   passes the ride's real completion time instead, so a maintenance run
+   *   today doesn't make an old trip's earnings show up under "Today".
    * @returns {Promise<number>} new balance
    */
-  async apply(ctx, driverId, { rideId = null, type, amount, ref = null, note = null }) {
+  async apply(ctx, driverId, { rideId = null, type, amount, ref = null, note = null, occurredAt = null }) {
     if (!ctx || ctx === db) throw ApiError.internal('walletRepo.apply must run in a transaction');
     await this.ensure(driverId, ctx);
     const row = await ctx.queryOne(
@@ -44,9 +49,9 @@ const walletRepo = {
       driverId,
     });
     await ctx.query(
-      `INSERT INTO rt_wallet_ledger (driver_id, ride_id, type, amount, balance_after, ref, note)
-       VALUES (:driverId, :rideId, :type, :amount, :next, :ref, :note)`,
-      { driverId, rideId, type, amount, next, ref, note },
+      `INSERT INTO rt_wallet_ledger (driver_id, ride_id, type, amount, balance_after, ref, note${occurredAt ? ', created_at' : ''})
+       VALUES (:driverId, :rideId, :type, :amount, :next, :ref, :note${occurredAt ? ', :occurredAt' : ''})`,
+      occurredAt ? { driverId, rideId, type, amount, next, ref, note, occurredAt } : { driverId, rideId, type, amount, next, ref, note },
     );
     return next;
   },
@@ -60,7 +65,16 @@ const walletRepo = {
     );
   },
 
-  async summary(driverId, sinceSql, ctx = db) {
+  /**
+   * @param {Date|null} since  A real bound value (a JS Date — mysql2
+   *   serialises it correctly per the pool's timezone:'Z' option), NOT a
+   *   raw SQL fragment. Passing a SQL-expression string here (e.g.
+   *   'CURDATE()') would silently break the filter: mysql2 binds it as a
+   *   literal string value, not interpolated SQL, so `created_at >=
+   *   'CURDATE()'` compares a DATETIME to an unparseable string — this was
+   *   a real, shipped bug (period filters returned all-time totals).
+   */
+  async summary(driverId, since, ctx = db) {
     return ctx.queryOne(
       `SELECT
          COALESCE(SUM(CASE WHEN type = 'trip_earning' THEN amount ELSE 0 END), 0) AS gross,
@@ -69,8 +83,8 @@ const walletRepo = {
          COALESCE(SUM(CASE WHEN type = 'payout'       THEN -amount ELSE 0 END), 0) AS paid_out,
          COUNT(DISTINCT CASE WHEN type = 'trip_earning' THEN ride_id END) AS trips
        FROM rt_wallet_ledger
-       WHERE driver_id = :driverId ${sinceSql ? 'AND created_at >= :since' : ''}`,
-      sinceSql ? { driverId, since: sinceSql } : { driverId },
+       WHERE driver_id = :driverId ${since ? 'AND created_at >= :since' : ''}`,
+      since ? { driverId, since } : { driverId },
     );
   },
 

@@ -68,13 +68,43 @@ const sqlImpl = {
     await ctx.query(`UPDATE rt_drivers SET last_seen_at = NOW() WHERE id = :id`, { id });
   },
 
-  /** Return an on_trip driver to the available pool once a ride ends/cancels. */
-  async freeFromTrip(id, ctx = db) {
+  /**
+   * The single source of truth for rt_drivers.availability, derived fresh
+   * from what's actually in rt_rides rather than trusting incremental
+   * writes to stay in sync. Precedence: on_trip (a ride currently occupies
+   * the exclusive active_driver_id slot) beats reserved (an accepted,
+   * not-yet-started non-local booking) beats available beats offline.
+   *
+   * This is what lets a driver be on_trip for a live Local ride while
+   * still holding a future Rental/Trip reservation — a single enum column
+   * can't represent both facts at once, so this always re-derives the
+   * *current* one from rt_rides (the durable fact) rather than storing it
+   * redundantly. Single UPDATE, no read-then-write race.
+   */
+  async recomputeAvailability(id, ctx = db) {
     await ctx.query(
-      `UPDATE rt_drivers SET availability = 'available'
-        WHERE id = :id AND availability = 'on_trip' AND is_online = 1`,
+      `UPDATE rt_drivers d SET d.availability = CASE
+          WHEN d.is_online = 0 THEN 'offline'
+          WHEN EXISTS (SELECT 1 FROM rt_rides r WHERE r.active_driver_id = d.id) THEN 'on_trip'
+          WHEN EXISTS (SELECT 1 FROM rt_rides r
+                        WHERE r.driver_id = d.id AND r.status = 'DRIVER_ASSIGNED'
+                          AND r.ride_type <> 'local'
+                          AND r.driver_accepted_at IS NOT NULL
+                          AND r.driver_accepted_by = d.id) THEN 'reserved'
+          ELSE 'available' END
+        WHERE d.id = :id`,
       { id },
     );
+  },
+
+  /**
+   * Historical name, kept because every call site already uses it — now a
+   * thin delegation to recomputeAvailability() so a driver freed from a
+   * completed/cancelled ride correctly lands on 'reserved' (not forced to
+   * 'available') if they're still holding a separate future booking.
+   */
+  async freeFromTrip(id, ctx = db) {
+    await sqlImpl.recomputeAvailability(id, ctx);
   },
 
   async updateRating(id, { avg, count }, ctx = db) {
@@ -158,9 +188,15 @@ const memImpl = {
     const d = store.find('drivers', (x) => x.id === Number(id));
     if (d) store.update(d, { last_seen_at: new Date().toISOString() });
   },
-  async freeFromTrip(id) {
+  // Memory mode has no rides table at all (see memoryStore.js's doc comment)
+  // — there's never ride data to derive on_trip/reserved from, so this is
+  // just the old on_trip-only behaviour, kept for interface parity.
+  async recomputeAvailability(id) {
     const d = store.find('drivers', (x) => x.id === Number(id));
     if (d && d.availability === 'on_trip' && d.is_online === 1) store.update(d, { availability: 'available' });
+  },
+  async freeFromTrip(id) {
+    await memImpl.recomputeAvailability(id);
   },
   async updateRating(id, { avg, count }) {
     const d = store.find('drivers', (x) => x.id === Number(id));

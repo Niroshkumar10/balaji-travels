@@ -20,7 +20,7 @@ class RolePickScreen extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const BrandLogo(stacked: true, iconSize: 44, fontSize: 26),
+                  const BrandLogo(stacked: true, iconSize: 64, fontSize: 26, useImage: true),
                   const SizedBox(height: 30),
                   RichText(
                     text: TextSpan(

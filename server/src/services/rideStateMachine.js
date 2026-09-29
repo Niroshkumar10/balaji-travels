@@ -27,8 +27,14 @@ const TERMINAL = new Set([
   'COMPLETED', 'CUSTOMER_CANCELLED', 'DRIVER_CANCELLED', 'SYSTEM_CANCELLED', 'NO_DRIVERS_FOUND',
 ]);
 
-// "Active" = a driver is (or was) attached and the ride is not finished.
-// Mirrors the rt_rides.active_driver_id generated column exactly.
+// "Held" = a driver is (or was) attached and the ride is not finished — a
+// driver can hold SEVERAL of these at once (one live ride + one or more
+// accepted future Rental/Trip reservations). This is broader than
+// rt_rides.active_driver_id (migration 0004), which only ever names the
+// ONE ride currently occupying the driver's exclusive "actually driving
+// right now" slot — DRIVER_ASSIGNED alone is ambiguous between "about to
+// start" (Local) and "reserved for later" (non-local); see
+// rideRepo.isLiveHold() for the exact split.
 const DRIVER_ACTIVE = new Set([
   'DRIVER_ASSIGNED', 'DRIVER_ARRIVING', 'DRIVER_ARRIVED',
   'RIDE_STARTED', 'RIDE_IN_PROGRESS', 'DRIVER_COMPLETED', 'PAYMENT_PENDING',
@@ -56,6 +62,17 @@ const TRANSITIONS = {
   // That single offer was rejected or timed out — back to the admin queue
   // instead of NO_DRIVERS_FOUND, so the admin can pick someone else.
   admin_offer_failed: { from: new Set(['SEARCHING_DRIVER']),               to: 'PENDING_ADMIN_ASSIGNMENT', actor: 'system' },
+  // Driver explicitly declines a non-local (Rental/Trip) assignment before
+  // accepting it (see assignmentGateService.decline()) — returns the ride to
+  // wherever it was before the admin's pick, never a terminal/failed status.
+  // Two events (not one mode-branching transition) since the target depends
+  // on which admin-assignment mode assigned it: the external panel's own
+  // bookings sit at REQUESTED before it assigns them, so declining puts it
+  // back there for the panel's own "unassigned" view to pick up again; the
+  // in-app path's own bookings sit at PENDING_ADMIN_ASSIGNMENT, matching
+  // admin_offer_failed's target above.
+  decline_assignment_panel: { from: new Set(['DRIVER_ASSIGNED']),          to: 'REQUESTED',                actor: 'driver' },
+  decline_assignment_admin: { from: new Set(['DRIVER_ASSIGNED']),          to: 'PENDING_ADMIN_ASSIGNMENT',  actor: 'driver' },
   driver_enroute:    { from: new Set(['DRIVER_ASSIGNED']),                 to: 'DRIVER_ARRIVING',  actor: 'driver' },
   driver_arrived:    { from: new Set(['DRIVER_ASSIGNED', 'DRIVER_ARRIVING']), to: 'DRIVER_ARRIVED', actor: 'driver', tsField: 'driver_arrived_at' },
   start_ride:        { from: new Set(['DRIVER_ARRIVED']),                  to: 'RIDE_STARTED',     actor: 'driver', tsField: 'started_at', needsOtp: true },

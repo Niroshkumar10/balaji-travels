@@ -229,22 +229,7 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
               InfoRow('Fare estimate', money(fare)),
               InfoRow('Payment', _paymentMethod == 'cash' ? 'Cash' : 'UPI'),
               if (scheduledLater)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.secondary.withValues(alpha: 0.14),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      'Scheduled pickups are coming soon — we\'ll dispatch a driver now instead of waiting for '
-                      '${DateFormat('d MMM, h:mm a').format(_scheduledAt)}.',
-                      style: const TextStyle(
-                          fontSize: 12.5, color: AppColors.secondaryDark),
-                    ),
-                  ),
-                ),
+                InfoRow('Pickup time', DateFormat('d MMM, h:mm a').format(_scheduledAt), strong: true),
               const SizedBox(height: 20),
               PrimaryButton(
                   label: 'Confirm booking',
@@ -255,10 +240,10 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    await _create(fare);
+    await _create(fare, scheduledLater ? _scheduledAt : null);
   }
 
-  Future<void> _create(double fare) async {
+  Future<void> _create(double fare, DateTime? scheduledAt) async {
     setState(() => _busy = true);
     final res = await ref.read(rideRepoProvider).create(
           pickup: widget.args.pickup,
@@ -266,6 +251,7 @@ class _TripReviewScreenState extends ConsumerState<TripReviewScreen> {
           vehicleCategory: _selected.bookingCategory,
           rideType: _effectiveRideType,
           paymentMethod: _paymentMethod,
+          scheduledAt: scheduledAt,
         );
     if (!mounted) return;
     setState(() => _busy = false);

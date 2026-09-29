@@ -157,7 +157,19 @@ class _State extends ConsumerState<DriverProfileScreen> {
     final auth = ref.watch(authControllerProvider);
 
     return Scaffold(
-      appBar: RtAppBar(title: 'My Profile', fallbackRoute: '/d/dashboard', showBack: widget.showBack, onBack: widget.onBack),
+      appBar: RtAppBar(
+        title: 'My Profile',
+        fallbackRoute: '/d/dashboard',
+        showBack: widget.showBack,
+        onBack: widget.onBack,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Refresh',
+            onPressed: () => ref.invalidate(driverProfileProvider),
+          ),
+        ],
+      ),
       body: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => EmptyState(icon: Icons.error_outline_rounded, title: 'Error', subtitle: '$e'),

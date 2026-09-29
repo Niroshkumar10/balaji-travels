@@ -22,9 +22,11 @@ Color rideStatusColor(RideStatus s) => switch (s) {
       RideStatus.unknown => AppColors.textTertiary,
     };
 
-/// Colour for a driver availability string ('available'|'on_trip'|'offline').
+/// Colour for a driver availability string
+/// ('available'|'reserved'|'on_trip'|'offline').
 Color driverAvailabilityColor(String availability) => switch (availability) {
       'available' => AppColors.rideAvailable,
+      'reserved' => AppColors.info,
       'on_trip' => AppColors.rideStarted,
       _ => AppColors.textTertiary,
     };

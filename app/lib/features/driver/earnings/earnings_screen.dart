@@ -34,6 +34,16 @@ class _State extends ConsumerState<EarningsScreen> {
         fallbackRoute: '/d/dashboard',
         showBack: widget.showBack,
         onBack: widget.onBack,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Refresh',
+            onPressed: () {
+              ref.invalidate(earningsSummaryProvider(_period));
+              ref.invalidate(ledgerProvider);
+            },
+          ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),

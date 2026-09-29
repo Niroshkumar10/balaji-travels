@@ -40,6 +40,14 @@ class LocationService {
     }
   }
 
+  /// Fast path for "show something on screen immediately": returns the
+  /// device's last-known fix right away (if the OS has one cached — this is
+  /// instant, no GPS wait) without blocking on a fresh high-accuracy fix.
+  /// Callers that also want an up-to-date position should follow this with
+  /// [current] in the background and update when it resolves — never used
+  /// as a substitute for a real fix, only as the first-paint value.
+  Future<Position?> lastKnown() => Geolocator.getLastKnownPosition();
+
   /// Stream of positions for the driver's live sharing. `distanceFilter`
   /// throttles updates to meaningful movement (battery + network friendly).
   Stream<Position> stream({int distanceFilterM = 15}) => Geolocator.getPositionStream(

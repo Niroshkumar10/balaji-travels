@@ -42,10 +42,16 @@ const presenceService = {
       !!chosen.is_active &&
       !vehicles.some((v) => v.is_active && v.id !== chosen.id);
 
-    if (driver.availability === 'on_trip') {
-      // already mid-trip — just refresh location, stay on_trip
+    if (driver.availability === 'on_trip' || driver.availability === 'reserved') {
+      // Already holding a ride (live, or a future reservation) — just
+      // refresh location and confirm online; skip vehicle-pairing
+      // reconciliation (not the moment to reconcile a vehicle swap mid-hold)
+      // and don't force back to 'available' — recomputeAvailability would
+      // correctly re-derive on_trip/reserved from rt_rides anyway, but
+      // there's nothing that changed here for it to reconcile.
       await driverLocationRepo.upsert(driverId, { lat, lng });
-      return { availability: 'on_trip' };
+      await driverRepo.setPresence(driverId, { isOnline: true, availability: driver.availability });
+      return { availability: driver.availability };
     }
     await db.withTransaction(async (tx) => {
       if (!pairingOk) {
@@ -64,6 +70,12 @@ const presenceService = {
   },
 
   async goOffline(driverId) {
+    // findActiveForDriver() only ever returns the ONE ride currently
+    // occupying the driver's exclusive active_driver_id slot (see migration
+    // 0004) — a driver holding only a future, not-yet-started Rental/Trip
+    // reservation is free to go offline (e.g. overnight); the reservation
+    // survives in rt_rides and is restored via recomputeAvailability() the
+    // next time they go online.
     const active = await rideRepo.findActiveForDriver(driverId);
     if (active) {
       throw ApiError.conflict('Finish or cancel your active ride before going offline', 'HAS_ACTIVE_RIDE');
