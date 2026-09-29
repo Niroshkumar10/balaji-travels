@@ -380,6 +380,57 @@ const paymentService = {
     if (!owns) throw ApiError.forbidden();
     return paymentRepo.findLatestForRide(rideId);
   },
+
+  /**
+   * A ride can reach COMPLETED without ever going through settlePaidRide()
+   * above — the external Admin Panel can write rt_rides.status='COMPLETED'
+   * directly (see jobs/adminBookingAnnouncer.js's doc comment), skipping
+   * DRIVER_COMPLETED/PAYMENT_PENDING entirely. settlePaidRide() can't fix
+   * this after the fact: it requires status to already be PAYMENT_PENDING/
+   * PAYMENT_FAILED, and short-circuits as a no-op once status is already
+   * COMPLETED. Without this, a ride completed that way shows up as a
+   * completed trip everywhere, but the driver's wallet is never credited —
+   * settlePaidRide() is the ONLY place that calls earningsService.creditRide,
+   * and it never ran. Called by adminBookingAnnouncer.js the moment it
+   * notices exactly this gap (a COMPLETED ride with no paid payment row).
+   *
+   * Always creates+marks-paid the payment row (even for a $0 fare), so the
+   * "no paid payment row yet" signal that triggers this always clears on
+   * the next poll regardless of amount — otherwise a genuinely-free ride
+   * would be retried forever.
+   */
+  async backfillExternalCompletion(rideId) {
+    return db.withTransaction(async (tx) => {
+      const ride = await rideRepo.findById(rideId, tx);
+      if (!ride || ride.status !== 'COMPLETED' || !ride.driver_id) return null;
+
+      const already = await paymentRepo.findPaidForRide(rideId, tx);
+      if (already) return null; // settled through the normal path after all — nothing to do
+
+      // A direct external write doesn't always set completed_at either
+      // (seen live: a status='COMPLETED' rental with completed_at NULL) —
+      // without this, the Trips screen's historyAt (core/models/ride.dart)
+      // falls back to requestedAt while earnings dates itself off nothing
+      // and defaults to "now", the exact same kind of Trips-vs-Earnings
+      // mismatch this whole backfill exists to fix. updated_at is the best
+      // available proxy for when that direct write actually happened.
+      if (!ride.completed_at) {
+        await tx.query(`UPDATE rt_rides SET completed_at = updated_at WHERE id = :id`, { id: rideId });
+        ride.completed_at = ride.updated_at;
+      }
+
+      const amount = Number(ride.final_fare ?? ride.est_fare ?? 0);
+      const payment = await paymentRepo.create(
+        { rideId, customerId: ride.customer_id, method: ride.payment_method ?? 'cash', amount },
+        tx,
+      );
+      await paymentRepo.markPaid(payment.id, {}, tx);
+      await rideRepo.attachPayment(rideId, payment.id, null, tx);
+      if (amount > 0) await earningsService.creditRide(tx, ride.driver_id, ride);
+      await driverRepo.freeFromTrip(ride.driver_id, tx);
+      return ride;
+    });
+  },
 };
 
 module.exports = paymentService;
